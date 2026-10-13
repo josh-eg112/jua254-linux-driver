@@ -12,6 +12,7 @@ makedepends=('wayland-protocols')
 optdepends=('intel-media-driver: VA-API JPEG encoding for the 60 FPS GPU path'
             'ffmpeg: slower --no-gpu capture path'
             'libnotify: desktop notification when the adapter needs a replug')
+options=('!debug')
 install=jua254-linux-driver.install
 source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
 sha256sums=('SKIP')
