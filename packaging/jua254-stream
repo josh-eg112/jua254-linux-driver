@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${JUA254_INSTALL_ROOT:-$HOME/.local/share/jua254}/linux/jua254_ctl.py" "$@"

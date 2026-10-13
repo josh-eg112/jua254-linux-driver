@@ -1,0 +1,19 @@
+[Unit]
+Description=JUA254 independent external monitor
+After=graphical-session.target
+PartOf=graphical-session.target
+Wants=graphical-session.target
+Conflicts=jua254-stream.service
+Before=jua254-stream.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/jua254/linux/jua254_monitor.py run
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

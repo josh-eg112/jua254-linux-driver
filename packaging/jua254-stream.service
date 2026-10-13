@@ -1,0 +1,18 @@
+[Unit]
+Description=JUA254 userspace desktop stream
+After=graphical-session.target
+PartOf=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/jua254
+ExecStart=%h/.local/share/jua254/linux/jua254_service.py --run
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

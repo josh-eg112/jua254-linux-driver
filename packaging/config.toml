@@ -1,0 +1,10 @@
+# JUA254 production defaults.
+capture = "wlroots-native"
+encoder = "vaapi"
+cursor = true
+fps = 30
+quality = 80
+monitor = "eDP-1"
+no_disable_on_exit = false
+stats = true
+log = "~/.local/state/jua254/stream.json"

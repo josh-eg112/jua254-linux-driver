@@ -1,0 +1,73 @@
+{
+  "jpeg": {
+    "marker": "SOF0",
+    "precision": 8,
+    "height": 1080,
+    "width": 1920,
+    "components": [
+      {
+        "id": 0,
+        "sampling": 34,
+        "quant_table": 0
+      },
+      {
+        "id": 1,
+        "sampling": 17,
+        "quant_table": 1
+      },
+      {
+        "id": 2,
+        "sampling": 17,
+        "quant_table": 1
+      }
+    ],
+    "sos_component_ids": [
+      0,
+      1,
+      2
+    ],
+    "length": 13157,
+    "sha256": "ce4e896a895114842c008263132ac1e63623d8adc31eb0fc2f2390ae28888310"
+  },
+  "fixed_image_capacity": 470960,
+  "zero_padding": 457803,
+  "original_header_hex": "03 00 00 00 b0 2f 07 00 8e 01 00 00 06 00 00 00 80 07 80 07 30 00 00 00 30 e0 1f 00 00 00 00 00 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+  "modified_header_hex": "03 00 00 00 b0 2f 07 00 8e 01 00 00 06 00 00 00 80 07 80 07 30 00 00 00 30 e0 1f 00 00 00 00 00 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+  "header_words_original": [
+    3,
+    470960,
+    398,
+    6,
+    125831040,
+    48,
+    2089008,
+    0,
+    13,
+    0,
+    0,
+    0
+  ],
+  "header_words_modified": [
+    3,
+    470960,
+    398,
+    6,
+    125831040,
+    48,
+    2089008,
+    0,
+    13,
+    0,
+    0,
+    0
+  ],
+  "changed_header_fields": [],
+  "modified_record_sequences": [
+    40,
+    42,
+    44,
+    46,
+    48
+  ],
+  "rollback_handoff": "shared/handoff/windows-colors-20260825"
+}

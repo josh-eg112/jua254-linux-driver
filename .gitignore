@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+linux/native/jua254-extcopy-capture
+linux/native/jua254-gpu-capture

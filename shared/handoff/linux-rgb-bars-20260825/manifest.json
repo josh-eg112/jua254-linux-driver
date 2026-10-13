@@ -1,0 +1,488 @@
+﻿{
+    "source_pcap":  "C:\\jua254-agent-kit\\shared\\captures\\20260825-080935-usbpcap2-colors.pcapng",
+    "filter":  "usb.endpoint_address == 0x02 \u0026\u0026 usb.data_len \u003e 0",
+    "transfer_count":  48,
+    "total_payload_bytes":  1863968,
+    "transfers":  [
+                      {
+                          "sequence":  1,
+                          "pcap_frame":  7,
+                          "time_relative_seconds":  2.02056,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "001-frame-7-len-32.bin",
+                          "sha256":  "ea103dd0c6e84fe80bff56c6e033dc166f487df6eb6a0ccffecb45c8426fac59"
+                      },
+                      {
+                          "sequence":  2,
+                          "pcap_frame":  9,
+                          "time_relative_seconds":  2.02237,
+                          "endpoint":  "0x02",
+                          "length":  8160,
+                          "first_u32_le":  7,
+                          "file":  "002-frame-9-len-8160.bin",
+                          "sha256":  "c63222fb4d2b45502565e8bc2b3e5168ceffa6d3bdfdaf813e44935c2211da8a"
+                      },
+                      {
+                          "sequence":  3,
+                          "pcap_frame":  13,
+                          "time_relative_seconds":  2.051208,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "003-frame-13-len-32.bin",
+                          "sha256":  "843a894185ad793388920ac1f291435fdb701574b99bbf8f1c305f7eb3cd972f"
+                      },
+                      {
+                          "sequence":  4,
+                          "pcap_frame":  15,
+                          "time_relative_seconds":  2.053196,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3,
+                          "file":  "004-frame-15-len-102400.bin",
+                          "sha256":  "8b0a0f22e99ede46a035b1bca0da943df23a20d95ef860cfacac0eae8bd54ccb"
+                      },
+                      {
+                          "sequence":  5,
+                          "pcap_frame":  17,
+                          "time_relative_seconds":  2.054408,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "005-frame-17-len-32.bin",
+                          "sha256":  "4e6315b9247d3111dea3f17c904b34c17700f22cbe993163b6a7c11fafa05d58"
+                      },
+                      {
+                          "sequence":  6,
+                          "pcap_frame":  19,
+                          "time_relative_seconds":  2.054454,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3556712410,
+                          "file":  "006-frame-19-len-102400.bin",
+                          "sha256":  "5d52b1f158b8d43dea6d2973786b38af0dcb8f51405e7533bdaa55d1772806bb"
+                      },
+                      {
+                          "sequence":  7,
+                          "pcap_frame":  21,
+                          "time_relative_seconds":  2.055714,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "007-frame-21-len-32.bin",
+                          "sha256":  "b7676c4a3dc5f6fa885033a88eb051cbf09c6517e4c391e572da2cf0fbf57bc7"
+                      },
+                      {
+                          "sequence":  8,
+                          "pcap_frame":  23,
+                          "time_relative_seconds":  2.055753,
+                          "endpoint":  "0x02",
+                          "length":  30688,
+                          "first_u32_le":  3682859899,
+                          "file":  "008-frame-23-len-30688.bin",
+                          "sha256":  "0d8fd2c015bbdce726473900c77b29bdd9c242a311f85cf5427f4434ba5de391"
+                      },
+                      {
+                          "sequence":  9,
+                          "pcap_frame":  25,
+                          "time_relative_seconds":  2.063691,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "009-frame-25-len-32.bin",
+                          "sha256":  "b391fc7f1be0cd9b3e15895ff872c339b3c809f2e986d4e8cd466991483876a9"
+                      },
+                      {
+                          "sequence":  10,
+                          "pcap_frame":  27,
+                          "time_relative_seconds":  2.06502,
+                          "endpoint":  "0x02",
+                          "length":  67552,
+                          "first_u32_le":  3,
+                          "file":  "010-frame-27-len-67552.bin",
+                          "sha256":  "008d0bcd8ec6ee1ccda847c6cae9f7516c6d092df29923271a03c4943eca0545"
+                      },
+                      {
+                          "sequence":  11,
+                          "pcap_frame":  33,
+                          "time_relative_seconds":  2.120727,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "011-frame-33-len-32.bin",
+                          "sha256":  "ea74386bb7ad615184d3eec5c952a11173f9b45804395a35c8d056c30e3e2cbd"
+                      },
+                      {
+                          "sequence":  12,
+                          "pcap_frame":  35,
+                          "time_relative_seconds":  2.121984,
+                          "endpoint":  "0x02",
+                          "length":  83936,
+                          "first_u32_le":  3,
+                          "file":  "012-frame-35-len-83936.bin",
+                          "sha256":  "04113f32140f911c7225c5335c2047612aa059137dc2647aa7b2320f8db9673b"
+                      },
+                      {
+                          "sequence":  13,
+                          "pcap_frame":  39,
+                          "time_relative_seconds":  6.057502,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "013-frame-39-len-32.bin",
+                          "sha256":  "59d82582f9ff22253ca39d0329ec244dcaa6242ce41fbf826b787a08f10aa4a3"
+                      },
+                      {
+                          "sequence":  14,
+                          "pcap_frame":  41,
+                          "time_relative_seconds":  6.058739,
+                          "endpoint":  "0x02",
+                          "length":  100320,
+                          "first_u32_le":  3,
+                          "file":  "014-frame-41-len-100320.bin",
+                          "sha256":  "0e47fdd5c4c1e42231b214ef0c9dd2f4e1ec8b75edc3a22edbc6fce26c6d3517"
+                      },
+                      {
+                          "sequence":  15,
+                          "pcap_frame":  45,
+                          "time_relative_seconds":  6.114146,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "015-frame-45-len-32.bin",
+                          "sha256":  "170fac630b9b87edbc2e87c0e3d5a5fa3f9d11c6038e26f1b34472bde7233181"
+                      },
+                      {
+                          "sequence":  16,
+                          "pcap_frame":  47,
+                          "time_relative_seconds":  6.115583,
+                          "endpoint":  "0x02",
+                          "length":  100320,
+                          "first_u32_le":  3,
+                          "file":  "016-frame-47-len-100320.bin",
+                          "sha256":  "297a96ac51e70c7c13d78758da938e771d588859280bc5f73ff7288a5ba7ef6d"
+                      },
+                      {
+                          "sequence":  17,
+                          "pcap_frame":  51,
+                          "time_relative_seconds":  10.069,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "017-frame-51-len-32.bin",
+                          "sha256":  "a3a79f2390bc51cb6f157037fa8f47f007c0d0d4c5e42c610772075006344dd2"
+                      },
+                      {
+                          "sequence":  18,
+                          "pcap_frame":  53,
+                          "time_relative_seconds":  10.070422,
+                          "endpoint":  "0x02",
+                          "length":  92128,
+                          "first_u32_le":  3,
+                          "file":  "018-frame-53-len-92128.bin",
+                          "sha256":  "90ef89360273caec5ef4512ea9f30230c3dee464da798bdeb3dedf4081dc4805"
+                      },
+                      {
+                          "sequence":  19,
+                          "pcap_frame":  57,
+                          "time_relative_seconds":  10.125076,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "019-frame-57-len-32.bin",
+                          "sha256":  "675d963efbf059236f69fd90a56d9c623a8fc05ef545147c7023d3580b1b7ab4"
+                      },
+                      {
+                          "sequence":  20,
+                          "pcap_frame":  59,
+                          "time_relative_seconds":  10.126639,
+                          "endpoint":  "0x02",
+                          "length":  100320,
+                          "first_u32_le":  3,
+                          "file":  "020-frame-59-len-100320.bin",
+                          "sha256":  "b219b5027b7d80c311a6d653c6425ff84a828b0e6b9b61455b32511341a369f1"
+                      },
+                      {
+                          "sequence":  21,
+                          "pcap_frame":  63,
+                          "time_relative_seconds":  14.067229,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "021-frame-63-len-32.bin",
+                          "sha256":  "536bec66af390d5bcb3e3cce861b21ad6b458d55366d8c96c7fa57571077c00f"
+                      },
+                      {
+                          "sequence":  22,
+                          "pcap_frame":  65,
+                          "time_relative_seconds":  14.068697,
+                          "endpoint":  "0x02",
+                          "length":  100320,
+                          "first_u32_le":  3,
+                          "file":  "022-frame-65-len-100320.bin",
+                          "sha256":  "19d48b26cd9b5a0800a2c0fa80d93f5254e247e09932652e37fbe691280826a7"
+                      },
+                      {
+                          "sequence":  23,
+                          "pcap_frame":  69,
+                          "time_relative_seconds":  14.123332,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "023-frame-69-len-32.bin",
+                          "sha256":  "fcbfaa8a54dddc857407065a5e631bc4f0ff52ebab3b87de67714d6813e8ee6f"
+                      },
+                      {
+                          "sequence":  24,
+                          "pcap_frame":  71,
+                          "time_relative_seconds":  14.125189,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3,
+                          "file":  "024-frame-71-len-102400.bin",
+                          "sha256":  "a0f9dc241cf15fd6cf50a4c9b3dec87ed2f60de6408193bb395c87424a11f353"
+                      },
+                      {
+                          "sequence":  25,
+                          "pcap_frame":  73,
+                          "time_relative_seconds":  14.126382,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "025-frame-73-len-32.bin",
+                          "sha256":  "4480e91a23e0f8e71cc759fe14468610a4b825f2202a9161a3adff938c9629d1"
+                      },
+                      {
+                          "sequence":  26,
+                          "pcap_frame":  75,
+                          "time_relative_seconds":  14.12643,
+                          "endpoint":  "0x02",
+                          "length":  6112,
+                          "first_u32_le":  4186160896,
+                          "file":  "026-frame-75-len-6112.bin",
+                          "sha256":  "f01be0e06835426f72c47e5c74529bb28a29246ce77b578ba624316d93b3eb2d"
+                      },
+                      {
+                          "sequence":  27,
+                          "pcap_frame":  79,
+                          "time_relative_seconds":  18.064358,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "027-frame-79-len-32.bin",
+                          "sha256":  "a1ac31dbfb517a007bd5721b1c3e9785648a58174fbbf720412b15c3d4df8a1c"
+                      },
+                      {
+                          "sequence":  28,
+                          "pcap_frame":  81,
+                          "time_relative_seconds":  18.065807,
+                          "endpoint":  "0x02",
+                          "length":  67552,
+                          "first_u32_le":  3,
+                          "file":  "028-frame-81-len-67552.bin",
+                          "sha256":  "4242f089fb821fc98789ba57c15ff093328dfe38895d2558555dd0af98acac91"
+                      },
+                      {
+                          "sequence":  29,
+                          "pcap_frame":  85,
+                          "time_relative_seconds":  18.120829,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "029-frame-85-len-32.bin",
+                          "sha256":  "5edb7bda783f4948e29ab14d74acf43321dc2c731be2803472cb1caf8d85a6e0"
+                      },
+                      {
+                          "sequence":  30,
+                          "pcap_frame":  87,
+                          "time_relative_seconds":  18.122264,
+                          "endpoint":  "0x02",
+                          "length":  83936,
+                          "first_u32_le":  3,
+                          "file":  "030-frame-87-len-83936.bin",
+                          "sha256":  "b971bc770744de7b725927a7152cf8b032fbd34bf3ee0f46742dfaca39de285b"
+                      },
+                      {
+                          "sequence":  31,
+                          "pcap_frame":  91,
+                          "time_relative_seconds":  20.06788,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "031-frame-91-len-32.bin",
+                          "sha256":  "106f78f1e26770713a67a74fa4d674aa002f0cdc83aa3187339b50e45fb1c657"
+                      },
+                      {
+                          "sequence":  32,
+                          "pcap_frame":  93,
+                          "time_relative_seconds":  20.070872,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3,
+                          "file":  "032-frame-93-len-102400.bin",
+                          "sha256":  "41c7c49f9206e0323bbf29ae71bd6e82be6528e877e75e2c5fac6fe7a96b1e45"
+                      },
+                      {
+                          "sequence":  33,
+                          "pcap_frame":  95,
+                          "time_relative_seconds":  20.072239,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "033-frame-95-len-32.bin",
+                          "sha256":  "3b3951f5bdc19269ac23a787c7f0d1f5215f961b5612e0354c0cbbe2cd5a87a7"
+                      },
+                      {
+                          "sequence":  34,
+                          "pcap_frame":  97,
+                          "time_relative_seconds":  20.072329,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3556712410,
+                          "file":  "034-frame-97-len-102400.bin",
+                          "sha256":  "5d52b1f158b8d43dea6d2973786b38af0dcb8f51405e7533bdaa55d1772806bb"
+                      },
+                      {
+                          "sequence":  35,
+                          "pcap_frame":  99,
+                          "time_relative_seconds":  20.073896,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "035-frame-99-len-32.bin",
+                          "sha256":  "4970714a3969b30b0f4f747e52713ccb1078970f740d0ba4ccd2f5fa2476dd5c"
+                      },
+                      {
+                          "sequence":  36,
+                          "pcap_frame":  101,
+                          "time_relative_seconds":  20.074049,
+                          "endpoint":  "0x02",
+                          "length":  30688,
+                          "first_u32_le":  3682859899,
+                          "file":  "036-frame-101-len-30688.bin",
+                          "sha256":  "cb7fb6e1beae573f8db4a47c1c54df851ff2e05c8ad893ab2ea67fbbef97cf2b"
+                      },
+                      {
+                          "sequence":  37,
+                          "pcap_frame":  103,
+                          "time_relative_seconds":  20.075576,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "037-frame-103-len-32.bin",
+                          "sha256":  "f19e4e988b3b317b3ada58f9eb86004f4f56ab39ee30a2df7449d4b2aec3bca4"
+                      },
+                      {
+                          "sequence":  38,
+                          "pcap_frame":  105,
+                          "time_relative_seconds":  20.075662,
+                          "endpoint":  "0x02",
+                          "length":  8160,
+                          "first_u32_le":  7,
+                          "file":  "038-frame-105-len-8160.bin",
+                          "sha256":  "09a51d03aaa0e5182163bda686639e07d3d3b1900e9ed4b2d2951e8873b1e49d"
+                      },
+                      {
+                          "sequence":  39,
+                          "pcap_frame":  111,
+                          "time_relative_seconds":  20.135864,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "039-frame-111-len-32.bin",
+                          "sha256":  "fb26228b83004032ccc274e8d345815ff6977b47e501b32c22b6c469b16b7373"
+                      },
+                      {
+                          "sequence":  40,
+                          "pcap_frame":  113,
+                          "time_relative_seconds":  20.137523,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  3,
+                          "file":  "040-frame-113-len-102400.bin",
+                          "sha256":  "8b07d4656a6ba41b20166c5177b40f8ef4f4f4a937ca2c46e99ca10d60fb5f02"
+                      },
+                      {
+                          "sequence":  41,
+                          "pcap_frame":  115,
+                          "time_relative_seconds":  20.138609,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "041-frame-115-len-32.bin",
+                          "sha256":  "dfeddcc3d3a4e8abcbc0228d953378a7ee7fb884461bbaccb503b771fda6e38c"
+                      },
+                      {
+                          "sequence":  42,
+                          "pcap_frame":  117,
+                          "time_relative_seconds":  20.138652,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  1780104912,
+                          "file":  "042-frame-117-len-102400.bin",
+                          "sha256":  "b19471b2f0b6c8818cb76d893684bfcb5e9a705d909c03caae37fd8ec9ef7407"
+                      },
+                      {
+                          "sequence":  43,
+                          "pcap_frame":  119,
+                          "time_relative_seconds":  20.139813,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "043-frame-119-len-32.bin",
+                          "sha256":  "ac422ec58135bbf6646a9dec40b3a231c0afe1d7cb87a59fdbd42935ae412f2a"
+                      },
+                      {
+                          "sequence":  44,
+                          "pcap_frame":  121,
+                          "time_relative_seconds":  20.139888,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  1346499169,
+                          "file":  "044-frame-121-len-102400.bin",
+                          "sha256":  "c44ab744adab3ea258492f65e82ec5e199771622d73a350dc897250bbd4dffa6"
+                      },
+                      {
+                          "sequence":  45,
+                          "pcap_frame":  123,
+                          "time_relative_seconds":  20.140953,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "045-frame-123-len-32.bin",
+                          "sha256":  "dd015339d2dd4d2f7a42cfa193a3817bcb374848f8e61937ab02553748418261"
+                      },
+                      {
+                          "sequence":  46,
+                          "pcap_frame":  125,
+                          "time_relative_seconds":  20.140995,
+                          "endpoint":  "0x02",
+                          "length":  102400,
+                          "first_u32_le":  4148170396,
+                          "file":  "046-frame-125-len-102400.bin",
+                          "sha256":  "e303cd54da413c51ba77bd18f61ec00f712dedae67d1fbbb052f06bb00cd6746"
+                      },
+                      {
+                          "sequence":  47,
+                          "pcap_frame":  127,
+                          "time_relative_seconds":  20.142293,
+                          "endpoint":  "0x02",
+                          "length":  32,
+                          "first_u32_le":  0,
+                          "file":  "047-frame-127-len-32.bin",
+                          "sha256":  "50416d28e01cc044a7822ae4719f9ab42a54e38a89374f4dd553633ea2fab33f"
+                      },
+                      {
+                          "sequence":  48,
+                          "pcap_frame":  129,
+                          "time_relative_seconds":  20.142372,
+                          "endpoint":  "0x02",
+                          "length":  61408,
+                          "first_u32_le":  1425091177,
+                          "file":  "048-frame-129-len-61408.bin",
+                          "sha256":  "4b6ec90587ee3631eff800e8b3856290fed79db30d1a41d50e7f4fe7ab74da15"
+                      }
+                  ]
+}
