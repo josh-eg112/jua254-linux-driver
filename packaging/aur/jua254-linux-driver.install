@@ -1,0 +1,15 @@
+post_install() {
+  echo ">>> Unplug and replug the JUA254 once so the udev rule applies."
+  echo ">>> Then, as your normal user inside Hyprland:"
+  echo ">>>   systemctl --user enable --now jua254-monitor.service"
+  echo ">>> If you used ./linux/install.sh before, run ./linux/uninstall.sh first:"
+  echo ">>> its per-user service would take precedence over this package."
+}
+
+post_upgrade() {
+  echo ">>> Restart the driver: systemctl --user restart jua254-monitor.service"
+}
+
+pre_remove() {
+  echo ">>> Stop the driver in your session first: jua254-monitor-stop"
+}

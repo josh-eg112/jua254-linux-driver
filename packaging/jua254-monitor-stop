@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Install root: $JUA254_INSTALL_ROOT, a source checkout, the per-user install, or the system package.
+root="${JUA254_INSTALL_ROOT:-}"
+here="$(cd "$(dirname "$0")" && pwd)"
+if [[ -z "$root" && -f "$here/../linux/jua254_monitor.py" ]]; then root="$(cd "$here/.." && pwd)"; fi
+if [[ -z "$root" && -f "$HOME/.local/share/jua254/linux/jua254_monitor.py" ]]; then root="$HOME/.local/share/jua254"; fi
+root="${root:-/usr/lib/jua254}"
 systemctl --user disable --now jua254-monitor.service
-root="${JUA254_INSTALL_ROOT:-$HOME/.local/share/jua254}"
 python3 "$root/linux/jua254_monitor.py" cleanup

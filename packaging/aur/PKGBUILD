@@ -1,0 +1,45 @@
+# Maintainer: josh-eg112 <180571163+josh-eg112@users.noreply.github.com>
+pkgname=jua254-linux-driver
+pkgver=0.1.1alpha
+_tag=v0.1.1-alpha
+pkgrel=1
+pkgdesc="Unofficial userspace driver for the j5create JUA254 USB-to-HDMI adapter (Hyprland extended monitor)"
+arch=('x86_64')
+url="https://github.com/josh-eg112/jua254-linux-driver"
+license=('GPL-3.0-or-later')
+depends=('python' 'python-pyusb' 'libusb' 'hyprland' 'wayland' 'libva' 'libdrm' 'mesa')
+makedepends=('wayland-protocols')
+optdepends=('intel-media-driver: VA-API JPEG encoding for the 60 FPS GPU path'
+            'ffmpeg: slower --no-gpu capture path'
+            'libnotify: desktop notification when the adapter needs a replug')
+install=jua254-linux-driver.install
+source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  make -C "$pkgname-${_tag#v}/linux/native"
+}
+
+package() {
+  cd "$pkgname-${_tag#v}"
+  local lib="$pkgdir/usr/lib/jua254"
+  install -d "$lib/linux/native/generated" "$lib/shared/handoff"
+  install -m644 linux/*.py "$lib/linux/"
+  rm -f "$lib"/linux/test_*.py
+  chmod 755 "$lib"/linux/jua254_{monitor,stream,service,ctl}.py
+  install -m644 linux/native/{Makefile,*.c,*.h} "$lib/linux/native/"
+  install -m644 linux/native/generated/* "$lib/linux/native/generated/"
+  cp -a shared/handoff/linux-rgb-bars-20260825 "$lib/shared/handoff/"
+  # Helpers last: the streamer rebuilds a helper older than its source, which a read-only /usr cannot do.
+  install -m755 linux/native/jua254-{extcopy,gpu}-capture "$lib/linux/native/"
+
+  sed 's#%h/.local/share/jua254#/usr/lib/jua254#' packaging/jua254-monitor.service \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/jua254-monitor.service"
+  install -Dm644 packaging/99-jua254.rules "$pkgdir/usr/lib/udev/rules.d/70-jua254.rules"
+  for tool in jua254-monitor-status jua254-monitor-start jua254-monitor-stop jua254-monitor-test jua254-monitor-diagnostic; do
+    install -Dm755 "packaging/$tool" "$pkgdir/usr/bin/$tool"
+  done
+  install -Dm644 packaging/config.toml "$pkgdir/usr/share/doc/$pkgname/config.toml.example"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
