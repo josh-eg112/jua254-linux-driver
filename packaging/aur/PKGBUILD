@@ -1,7 +1,7 @@
 # Maintainer: josh-eg112 <180571163+josh-eg112@users.noreply.github.com>
 pkgname=jua254-linux-driver
-pkgver=0.1.1alpha
-_tag=v0.1.1-alpha
+pkgver=0.1.2alpha
+_tag=v0.1.2-alpha
 pkgrel=1
 pkgdesc="Unofficial userspace driver for the j5create JUA254 USB-to-HDMI adapter (Hyprland extended monitor)"
 arch=('x86_64')

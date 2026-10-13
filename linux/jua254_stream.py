@@ -202,7 +202,10 @@ class PersistentFFmpegEncoder:
         common=["ffmpeg","-hide_banner","-loglevel","error","-f","rawvideo","-pixel_format",pixel_format,"-video_size","1920x1080","-framerate","60","-i","pipe:0"]
         if backend=="hardware":
             common[1:1]=["-vaapi_device","/dev/dri/renderD128"]
-            video_filter="format=nv12,hwupload" if no_scale else "scale=1920:1080,format=nv12,hwupload"
+            # JFIF JPEG is full-range YCbCr, but swscale defaults to limited range (black 16, white 235).
+            # Convert to full range, then keep the limited tag: mjpeg_vaapi rejects full-range frames (EINVAL).
+            full="out_range=full,format=nv12,setparams=range=tv,hwupload"
+            video_filter=f"scale={full}" if no_scale else f"scale=1920:1080:{full}"
             output=["-vf",video_filter,"-c:v","mjpeg_vaapi","-global_quality",str(quality),"-async_depth",str(async_depth),"-jfif","1"]
         else:
             q=max(2,min(31,round((101-quality)*.29)))
