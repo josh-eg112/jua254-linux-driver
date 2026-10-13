@@ -15,7 +15,7 @@ optdepends=('intel-media-driver: VA-API JPEG encoding for the 60 FPS GPU path'
 options=('!debug')
 install=jua254-linux-driver.install
 source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
-sha256sums=('2ade4ad2766b20c60354c39b08fe0851be92ab468ed05094dea3791da1e79f9d')
+sha256sums=('508ba992277630d0901239f57c65364e62167d0d544e5bdc339077fd89c03bf1')
 
 build() {
   make -C "$pkgname-${_tag#v}/linux/native"

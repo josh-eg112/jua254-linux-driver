@@ -1,6 +1,6 @@
 pkgbase = jua254-linux-driver
 	pkgdesc = Unofficial userspace driver for the j5create JUA254 USB-to-HDMI adapter (Hyprland extended monitor)
-	pkgver = 0.1.1alpha
+	pkgver = 0.1.2alpha
 	pkgrel = 1
 	url = https://github.com/josh-eg112/jua254-linux-driver
 	install = jua254-linux-driver.install
@@ -19,7 +19,7 @@ pkgbase = jua254-linux-driver
 	optdepends = ffmpeg: slower --no-gpu capture path
 	optdepends = libnotify: desktop notification when the adapter needs a replug
 	options = !debug
-	source = jua254-linux-driver-v0.1.1-alpha.tar.gz::https://github.com/josh-eg112/jua254-linux-driver/archive/refs/tags/v0.1.1-alpha.tar.gz
-	sha256sums = 2ade4ad2766b20c60354c39b08fe0851be92ab468ed05094dea3791da1e79f9d
+	source = jua254-linux-driver-v0.1.2-alpha.tar.gz::https://github.com/josh-eg112/jua254-linux-driver/archive/refs/tags/v0.1.2-alpha.tar.gz
+	sha256sums = 508ba992277630d0901239f57c65364e62167d0d544e5bdc339077fd89c03bf1
 
 pkgname = jua254-linux-driver
