@@ -31,11 +31,32 @@ sudo pacman -S --needed python python-pyusb libusb wayland wayland-protocols lib
 
 ## Install
 
+### Arch Linux package (recommended)
+
+```bash
+git clone https://github.com/josh-eg112/jua254-linux-driver.git
+cd jua254-linux-driver/packaging/aur
+makepkg -si
+```
+
+Unplug and replug the adapter once, then start the driver as your normal user inside Hyprland:
+
+```bash
+systemctl --user enable --now jua254-monitor.service
+```
+
+The package installs into `/usr/lib/jua254`. Remove it with `jua254-monitor-stop` and then
+`sudo pacman -R jua254-linux-driver`.
+
+### Per-user install (any distribution with the requirements above)
+
 ```bash
 git clone https://github.com/josh-eg112/jua254-linux-driver.git
 cd jua254-linux-driver
 ./linux/install.sh --udev
 ```
+
+Use one install method, not both: the per-user service takes precedence over the package.
 
 `--udev` installs a rule (`/etc/udev/rules.d/99-jua254.rules`) so the adapter can be used without
 root; it asks for your password once. **Unplug and replug the adapter once** after the first install.
@@ -62,7 +83,7 @@ printf '[Service]\nEnvironment=JUA254_MODE=1280x720@60\n' > ~/.config/systemd/us
 systemctl --user daemon-reload && systemctl --user restart jua254-monitor
 ```
 
-## Uninstall
+## Uninstall (per-user install)
 
 ```bash
 ./linux/uninstall.sh          # add --udev to also remove the udev rule
