@@ -273,7 +273,7 @@ def run_supervisor_scenario(presence, child_statuses, stop_after_sleeps, seconds
     """Run the real supervisor loop with deterministic process/device fakes."""
     import jua254_monitor as monitor
     original = {name: getattr(monitor, name) for name in (
-        "device_present", "ensure_output", "assign_workspace", "wait_output_ready",
+        "device_present", "attached_locations", "ensure_output", "assign_workspace", "wait_output_ready",
         "owned_output_state", "recover_owned_output", "cleanup_output",
         "cleanup_owned", "monitors", "preserve_output_for_restart")}
     original_popen = monitor.subprocess.Popen
@@ -317,6 +317,7 @@ def run_supervisor_scenario(presence, child_statuses, stop_after_sleeps, seconds
 
     try:
         monitor.device_present = device
+        monitor.attached_locations = lambda: ["2-1"] if device() else []
         monitor.ensure_output = ensure
         monitor.assign_workspace = lambda *_: None
         monitor.wait_output_ready = lambda name: ready(name)

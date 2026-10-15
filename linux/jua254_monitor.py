@@ -38,6 +38,17 @@ def device_present():
             pass
     return False
 
+def attached_locations(root=Path("/sys/bus/usb/devices")):
+    """Read-only: the USB locations ("bus-port.port", the sysfs device name) of every attached JUA254."""
+    found = []
+    for vendor in root.glob("*/idVendor"):
+        try:
+            if vendor.read_text().strip().lower() == "0711" and (vendor.parent / "idProduct").read_text().strip().lower() == "5600":
+                found.append(vendor.parent.name)
+        except OSError:
+            pass
+    return sorted(found)
+
 def load_owned(path=OWNERSHIP_FILE):
     try:
         value = json.loads(Path(path).read_text())
@@ -111,13 +122,20 @@ def assign_workspace(name, workspace):
     except RuntimeError:
         pass
 
+def owned_by_session():
+    """Owned outputs per session state file: session 1's historical file, then numbered ones."""
+    files = [OWNERSHIP_FILE] + sorted(STATE_DIR.glob("headless-outputs-*.json"))
+    return {f.name: sorted(load_owned(f)) for f in files if load_owned(f)}
+
 def print_status(requested=None):
-    data = monitors(); owned = sorted(load_owned())
+    data = monitors(); per_session = owned_by_session()
+    owned = sorted(name for names in per_session.values() for name in names)
     if requested is None and len(owned) == 1:
         requested = owned[0]
     selected = select_exact(requested, data) if requested else None
-    print(json.dumps({"device_present": device_present(), "outputs": data, "virtual_outputs": [m for m in data if _is_virtual(m.get("name", ""))],
-                      "owned_outputs": owned, "requested": requested, "selected": selected,
+    print(json.dumps({"device_present": device_present(), "adapters": attached_locations(), "outputs": data,
+                      "virtual_outputs": [m for m in data if _is_virtual(m.get("name", ""))],
+                      "owned_outputs": owned, "owned_by_session": per_session, "requested": requested, "selected": selected,
                       "capture_protocol": "ext-image-copy-v1" if requested else None}, indent=2))
 
 DEFAULT_MODE = "1920x1080@60"
@@ -218,8 +236,95 @@ def stream_output(name, args):
         except subprocess.TimeoutExpired: child.kill(); child.wait()
         raise
 
+class Session:
+    """One adapter's managed output and streamer. Session 1 keeps the historical single-adapter state
+    files (and calls the ownership helpers exactly as before); later sessions get numbered ones."""
+    def __init__(self, location, number, workspace_hint=None):
+        self.location, self.number, self.workspace_hint = location, number, workspace_hint
+        self.name = None; self.child = None
+        self.kw = {} if number == 1 else {"state_path": STATE_DIR / f"headless-outputs-{number}.json"}
+
+    def stream_args(self):
+        extra = ["--usb-location", self.location]
+        if self.number > 1:
+            extra += ["--telemetry", f"/run/user/{os.getuid()}/jua254-telemetry-{self.number}.json",
+                      "--log", str(STATE_DIR / f"stream-{self.number}.json")]
+        return extra
+
+    def stop_child(self):
+        if self.child is not None:
+            self.child.terminate()
+            try: self.child.wait(timeout=5)
+            except subprocess.TimeoutExpired: self.child.kill(); self.child.wait()
+            self.child = None
+
+    def unplugged(self):
+        """The adapter is gone: stop its streamer and remove its output, remembering the workspace."""
+        self.stop_child()
+        if self.name:
+            try:
+                previous_monitor = next(m for m in monitors() if m.get("name") == self.name)
+                self.workspace_hint = output_workspace(previous_monitor)
+            except (RuntimeError, StopIteration):
+                pass
+            try: cleanup_output(self.name, **self.kw)
+            except RuntimeError as exc:
+                print(f"JUA254 output cleanup deferred: {exc}", flush=True)
+            self.name = None
+        else:
+            cleanup_owned(**self.kw)
+
+    def step(self, args, diagnostics, generation):
+        """One supervision step; returns seconds to sleep, or None when a bounded run completed."""
+        if self.name is None:
+            try:
+                self.name, _ = ensure_output(**self.kw)
+                assign_workspace(self.name, self.workspace_hint)
+                wait_output_ready(self.name)
+                print(f"JUA254 managed output={self.name} adapter={self.location}", flush=True)
+            except RuntimeError as exc:
+                print(f"JUA254 compositor unavailable: {exc}; retrying", flush=True)
+                return 1
+        if self.child is None:
+            state = owned_output_state(self.name)
+            if state == "absent":
+                save_owned(load_owned(**self.path_kw()) - {self.name}, **self.path_kw())
+                self.name = None
+                return 1
+            if state != "ready":
+                return 1
+            try:
+                if apply_output_mode(self.name, getattr(args, "mode", DEFAULT_MODE)): wait_output_ready(self.name)
+                self.child = subprocess.Popen(stream_command(self.name, args) + self.stream_args())
+                diagnostics.event("child_start", generation=generation, child_pid=getattr(self.child, "pid", None),
+                                  output=self.name, adapter=self.location)
+            except (OSError, RuntimeError) as exc:
+                diagnostics.counter("child_start_failures", diagnostics.state["counters"].get("child_start_failures", 0) + 1,
+                                    error=repr(exc))
+                print(f"JUA254 streamer start failed: {exc}; retrying", flush=True)
+                return 1
+        if self.child.poll() is not None:
+            child_status = self.child.returncode
+            diagnostics.event("child_exit", generation=generation, child_pid=getattr(self.child, "pid", None),
+                              exit_code=child_status if child_status >= 0 else None,
+                              signal=-child_status if child_status < 0 else None, adapter=self.location)
+            self.child = None
+            if args.seconds is not None and child_status == 0 and not getattr(args, "restart_after_bounded_exit", False):
+                diagnostics.event("bounded_complete", generation=generation, output=self.name, exit_code=child_status)
+                print("JUA254 bounded streamer completed; supervisor exiting", flush=True)
+                return None
+            print(f"JUA254 streamer exited status={child_status} adapter={self.location}; recovering child", flush=True)
+            self.name, _ = recover_owned_output(self.name, **self.kw)
+            # The compositor still owns the exact output (or could not be queried): retain ownership
+            # and wait; never create a duplicate merely because capture is temporarily unready.
+            return 1
+        return .5
+
+    def path_kw(self):
+        return {"path": self.kw["state_path"]} if self.kw else {}
+
 def run_service(args):
-    """Maintain one managed output and streamer across USB unplug/replug."""
+    """Maintain one managed output and streamer per attached adapter across unplug/replug."""
     stopping = False
     diagnostics = DiagnosticsState(getattr(args, "supervisor_diagnostics_state", None), "monitor-supervisor")
     generation = f"{os.getpid()}-{time.monotonic_ns()}"
@@ -229,92 +334,37 @@ def run_service(args):
         stopping = True
     signal_handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
     for s in signal_handlers: signal.signal(s, stop)
-    name = None; child = None; workspace_hint = None
+    sessions = {}; hints = {}
     try:
         while not stopping:
-            if not device_present():
-                if child is not None:
-                    child.terminate()
-                    try: child.wait(timeout=5)
-                    except subprocess.TimeoutExpired: child.kill(); child.wait()
-                    child = None
-                if name:
-                    try:
-                        previous_monitor = next(m for m in monitors() if m.get("name") == name)
-                        workspace_hint = output_workspace(previous_monitor)
-                    except (RuntimeError, StopIteration):
-                        pass
-                    try: cleanup_output(name)
-                    except RuntimeError as exc:
-                        print(f"JUA254 output cleanup deferred: {exc}", flush=True)
-                    name = None
-                else:
-                    cleanup_owned()
+            attached = attached_locations()
+            for location in [l for l in sessions if l not in attached]:
+                session = sessions.pop(location)
+                session.unplugged()
+                hints[session.number] = session.workspace_hint
+                print(f"JUA254 adapter {location} unplugged", flush=True)
+            for location in attached:
+                if location not in sessions:
+                    used = {s.number for s in sessions.values()}
+                    number = next(n for n in range(1, len(used) + 2) if n not in used)
+                    sessions[location] = Session(location, number, hints.get(number))
+            if not sessions:
+                cleanup_owned()
                 time.sleep(1)
                 continue
-            if name is None:
-                try:
-                    name, _ = ensure_output()
-                    assign_workspace(name, workspace_hint)
-                    wait_output_ready(name)
-                    print(f"JUA254 managed output={name}", flush=True)
-                except RuntimeError as exc:
-                    print(f"JUA254 compositor unavailable: {exc}; retrying", flush=True)
-                    time.sleep(1)
-                    continue
-            if child is None:
-                state = owned_output_state(name)
-                if state == "absent":
-                    save_owned(load_owned() - {name})
-                    name = None
-                    time.sleep(1)
-                    continue
-                if state != "ready":
-                    time.sleep(1)
-                    continue
-                try:
-                    if apply_output_mode(name, getattr(args, "mode", DEFAULT_MODE)): wait_output_ready(name)
-                    child = subprocess.Popen(stream_command(name, args))
-                    diagnostics.event("child_start", generation=generation, child_pid=getattr(child, "pid", None), output=name)
-                except (OSError, RuntimeError) as exc:
-                    diagnostics.counter("child_start_failures", diagnostics.state["counters"].get("child_start_failures", 0) + 1,
-                                        error=repr(exc))
-                    print(f"JUA254 streamer start failed: {exc}; retrying", flush=True)
-                    time.sleep(1)
-                    continue
-            if child.poll() is not None:
-                child_status = child.returncode
-                diagnostics.event("child_exit", generation=generation, child_pid=getattr(child, "pid", None),
-                                  exit_code=child_status if child_status >= 0 else None,
-                                  signal=-child_status if child_status < 0 else None)
-                child = None
-                bounded_complete = (args.seconds is not None and child_status == 0)
-                if bounded_complete and not getattr(args, "restart_after_bounded_exit", False):
-                    diagnostics.event("bounded_complete", generation=generation, output=name,
-                                      exit_code=child_status)
-                    print("JUA254 bounded streamer completed; supervisor exiting", flush=True)
-                    break
-                print(f"JUA254 streamer exited status={child_status}; recovering child", flush=True)
-                name, output_state = recover_owned_output(name)
-                if name is not None and output_state != "ready":
-                    # The compositor still owns the exact output (or could not
-                    # be queried).  Retain ownership and wait; never create a
-                    # duplicate merely because capture is temporarily unready.
-                    time.sleep(1)
-                    continue
-                time.sleep(1)
-            else:
-                time.sleep(.5)
+            waits = [session.step(args, diagnostics, generation) for session in sorted(sessions.values(), key=lambda s: s.number)]
+            if None in waits:
+                break
+            time.sleep(min(waits))
     finally:
         diagnostics.event("supervisor_stop", generation=generation, stopping=stopping)
-        if child is not None:
-            child.terminate()
-            try: child.wait(timeout=5)
-            except subprocess.TimeoutExpired: child.kill(); child.wait()
-        # Preserve the owned output and state across a systemd restart. USB
-        # unplug removes it in the loop above; the explicit stop command uses
-        # the cleanup subcommand after the service has stopped.
-        preserve_output_for_restart(name)
+        # Preserve the owned outputs and state across a systemd restart. USB unplug removes them in
+        # the loop above; the explicit stop command uses the cleanup subcommand after the service stops.
+        for session in sessions.values():
+            session.stop_child()
+            preserve_output_for_restart(session.name, **session.kw)
+        if not sessions:
+            preserve_output_for_restart(None)
         for s, handler in signal_handlers.items(): signal.signal(s, handler)
     return 0
 
