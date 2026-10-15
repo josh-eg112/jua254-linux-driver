@@ -1,0 +1,74 @@
+name: macOS app
+
+# Builds JUA254 Display.app (universal) on a GitHub macOS runner. On a version tag (v*) the zip is
+# attached to that tag's GitHub release; otherwise it is kept as a workflow artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_SIGNING_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Protocol tests (Swift port vs Python golden vectors)
+        run: bash macos/native/test.sh
+
+      - name: Import the release signing certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "JUA254_SIGN_IDENTITY=JUA254 Release Signing" >> "$GITHUB_ENV"
+
+      - name: Set the version from the tag
+        if: github.ref_type == 'tag'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${version%%-*}" macos/native/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" macos/native/Info.plist
+
+      - name: Build
+        run: bash macos/native/build.sh --no-install
+
+      - name: Check the app
+        run: |
+          app="macos/native/build/JUA254 Display.app"
+          lipo -archs "$app/Contents/MacOS/JUA254Display"
+          lipo -archs "$app/Contents/MacOS/JUA254Display" | grep -q x86_64
+          lipo -archs "$app/Contents/MacOS/JUA254Display" | grep -q arm64
+          codesign -dv "$app" 2>&1 | grep -E "Identifier|Authority|Signature"
+          codesign --verify --deep --strict "$app" || echo "note: not trusted on this runner (self-signed), expected"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JUA254-Display
+          path: macos/native/build/JUA254-Display.zip
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --prerelease --title "$GITHUB_REF_NAME" --notes "See README.md."
+          gh release upload "$GITHUB_REF_NAME" macos/native/build/JUA254-Display.zip --clobber

@@ -1,0 +1,67 @@
+// Checks the Swift port against golden vectors from the proven Python code
+// (macos/native/tests/make_golden.py). Built and run by macos/native/test.sh on Linux or macOS.
+
+import Foundation
+
+var failures = 0
+func check(_ condition: Bool, _ message: @autoclosure () -> String) {
+    if !condition { failures += 1; print("FAIL: \(message())") }
+}
+
+func fnv(_ data: Data) -> String {
+    var hash: UInt64 = 0xcbf29ce484222325
+    for byte in data { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+    return String(format: "%016llx", hash)
+}
+
+func payload(_ n: Int, _ size: Int) -> Data {
+    Data((0..<size).map { UInt8(truncatingIfNeeded: $0 * 7 + n * 13) })
+}
+
+let golden = URL(fileURLWithPath: CommandLine.arguments[1])
+
+// Framing: 80 frames of varied sizes through rotation, sized payloads and a wrapping ring.
+let frames = try JSONSerialization.jsonObject(with: Data(contentsOf: golden.appendingPathComponent("framer.json"))) as! [[String: Any]]
+var framer = try Framer(vramMB: 58)
+for (n, frame) in frames.enumerated() {
+    let size = frame["size"] as! Int
+    let expected = frame["transfers"] as! [[Any]]
+    let delays = frame["delays"] as! [Double]
+    let group = try framer.group(jpeg: payload(n, size))
+    check(group.count == expected.count, "frame \(n): \(group.count) transfers, expected \(expected.count)")
+    for (i, transfer) in group.enumerated() where i < expected.count {
+        check(transfer.data.count == expected[i][0] as! Int, "frame \(n) transfer \(i): length \(transfer.data.count)")
+        check(fnv(transfer.data) == expected[i][1] as! String, "frame \(n) transfer \(i): bytes differ")
+        check(abs(transfer.delay - delays[i]) < 1e-6, "frame \(n) transfer \(i): delay \(transfer.delay) vs \(delays[i])")
+    }
+}
+print("framer: \(frames.count) frames checked")
+
+// The size limit matches the sized envelope exactly.
+check(sizedPayloadTotal(JUA254.capacity) <= Template.total && sizedPayloadTotal(JUA254.capacity + 1) > Template.total,
+      "capacity \(JUA254.capacity) is not the largest JPEG that fits")
+do {
+    var limit = try Framer(vramMB: 58)
+    _ = try limit.group(jpeg: payload(0, JUA254.capacity + 1))
+    check(false, "a JPEG over capacity was framed")
+} catch {}
+
+// JPEG checks: same accept/reject decisions and output bytes as adapter_jpeg().
+let cases = try JSONSerialization.jsonObject(with: Data(contentsOf: golden.appendingPathComponent("jpeg.json"))) as! [[String: Any]]
+for item in cases {
+    let file = item["file"] as! String, allow = item["allow_restart"] as! Bool
+    let input = try Data(contentsOf: golden.appendingPathComponent(file))
+    let label = "\(file) allow_restart=\(allow)"
+    do {
+        let output = try adapterJPEG(input, allowRestart: allow)
+        check(item["ok"] as? String == fnv(output), "\(label): accepted (\(fnv(output))), expected \(item)")
+    } catch JPEGCheck.tooLarge(let size) {
+        check(item["too_large"] as? Bool == true, "\(label): too large (\(size)), expected \(item)")
+    } catch JPEGCheck.unsuitable(let reason) {
+        check(item["unsuitable"] as? String == reason, "\(label): unsuitable '\(reason)', expected \(item)")
+    }
+}
+print("jpeg: \(cases.count) cases checked")
+
+print(failures == 0 ? "ALL PASSED" : "\(failures) FAILURES")
+exit(failures == 0 ? 0 : 1)

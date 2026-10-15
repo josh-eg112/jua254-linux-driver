@@ -1,0 +1,82 @@
+[
+ {
+  "file": "plain420.jpg",
+  "allow_restart": true,
+  "ok": "e06437c9ffbfdc6f"
+ },
+ {
+  "file": "plain420.jpg",
+  "allow_restart": false,
+  "ok": "e06437c9ffbfdc6f"
+ },
+ {
+  "file": "apple_like.jpg",
+  "allow_restart": true,
+  "ok": "4e5f751cc24d1217"
+ },
+ {
+  "file": "apple_like.jpg",
+  "allow_restart": false,
+  "unsuitable": "uses restart markers (DRI)"
+ },
+ {
+  "file": "comment.jpg",
+  "allow_restart": true,
+  "ok": "e06437c9ffbfdc6f"
+ },
+ {
+  "file": "comment.jpg",
+  "allow_restart": false,
+  "ok": "e06437c9ffbfdc6f"
+ },
+ {
+  "file": "yuv444.jpg",
+  "allow_restart": true,
+  "unsuitable": "chroma sampling ['0x11', '0x11', '0x11'], adapter needs 4:2:0"
+ },
+ {
+  "file": "yuv444.jpg",
+  "allow_restart": false,
+  "unsuitable": "chroma sampling ['0x11', '0x11', '0x11'], adapter needs 4:2:0"
+ },
+ {
+  "file": "progressive.jpg",
+  "allow_restart": true,
+  "unsuitable": "JPEG must contain baseline SOF0 and SOS markers"
+ },
+ {
+  "file": "progressive.jpg",
+  "allow_restart": false,
+  "unsuitable": "JPEG must contain baseline SOF0 and SOS markers"
+ },
+ {
+  "file": "wrong_size.jpg",
+  "allow_restart": true,
+  "unsuitable": "wrong size"
+ },
+ {
+  "file": "wrong_size.jpg",
+  "allow_restart": false,
+  "unsuitable": "wrong size"
+ },
+ {
+  "file": "too_large.jpg",
+  "allow_restart": true,
+  "too_large": true
+ },
+ {
+  "file": "too_large.jpg",
+  "allow_restart": false,
+  "too_large": true
+ },
+ {
+  "file": "not_jpeg.jpg",
+  "allow_restart": true,
+  "unsuitable": "not a JPEG"
+ },
+ {
+  "file": "not_jpeg.jpg",
+  "allow_restart": false,
+  "unsuitable": "not a JPEG"
+ }
+]

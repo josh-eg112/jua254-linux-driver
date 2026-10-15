@@ -1,8 +1,8 @@
 # jua254-linux-driver
 
-An unofficial userspace Linux driver for the **j5create JUA254** USB-to-HDMI display adapter
+An unofficial userspace driver for the **j5create JUA254** USB-to-HDMI display adapter
 (MCT Trigger VI, USB ID `0711:5600`). It turns the adapter into an independent extended monitor
-on Hyprland.
+on **Linux** (Hyprland) and **macOS** (the JUA254 Display menu-bar app, see [macOS](#macos)).
 
 > **Alpha.** This is a reverse-engineered driver that has been used daily on one machine. Expect
 > rough edges. Not affiliated with, endorsed by, or supported by j5create or MCT.
@@ -101,6 +101,50 @@ systemctl --user daemon-reload && systemctl --user restart jua254-monitor
 When reporting a bug, attach the output of `jua254-monitor-diagnostic` and the journal. Never
 attach anything containing passwords or personal files.
 
+## macOS
+
+**JUA254 Display** is a menu-bar app that makes the adapter a second display (extended desktop),
+or mirrors your main display. It starts when the adapter is plugged in and stops when it is
+unplugged; no drivers or extra software to install.
+
+### Install
+
+1. Download `JUA254-Display.zip` from the [latest release](https://github.com/josh-eg112/jua254-linux-driver/releases/latest)
+   and unzip it. Move **JUA254 Display** to your Applications folder.
+2. Open it. macOS will say it can't verify the app (it is signed, but not by an Apple-registered
+   developer). Open **System Settings > Privacy & Security**, scroll down, and click **Open Anyway**.
+3. Plug in the adapter (with an HDMI monitor attached). macOS asks to let JUA254 Display record
+   the screen: allow it, then quit the app from its menu-bar icon and open it again.
+4. The adapter's monitor appears as a display named **JUA254**. Arrange it in System Settings >
+   Displays like any other monitor.
+
+The menu-bar icon shows the status and frame rate, and has Start/Stop, Extended Desktop or Mirror,
+Start When Adapter Is Plugged In, Open at Login, and the log (`~/Library/Logs/JUA254/display.log`).
+To uninstall, quit the app and move it to the Bin.
+
+### Notes
+
+- Requires macOS 12.3 or newer. One universal app for Intel and Apple Silicon.
+- **Tested on an Intel Mac (Hackintosh) with macOS 26.7.1 only.** Apple Silicon and other macOS
+  versions are untested; reports are welcome.
+- About 50-60 frames/s while the screen changes on the tested machine.
+- The extended desktop uses a private macOS API (`CGVirtualDisplay`, as BetterDisplay and DeskPad
+  do), so a future macOS update could break it; **Mirror Main Display** uses only public APIs.
+- Only one program can use the adapter at a time. Quit the app before running anything else that
+  talks to it. If the menu says the adapter is not responding, unplug and replug it.
+
+### Build from source
+
+Needs the Xcode command-line tools (`xcode-select --install`):
+
+```bash
+bash macos/native/test.sh    # protocol tests against golden vectors from the Python driver
+bash macos/native/build.sh   # builds, signs locally, installs to ~/Applications and opens the app
+```
+
+`build.sh` downloads libusb 1.0.30 (checked against a pinned SHA-256) and builds it into the app.
+Releases are built by `.github/workflows/macos.yml` on a GitHub macOS runner.
+
 ## Development
 
 ```bash
@@ -111,7 +155,8 @@ Three tests compare against private USB captures from the research project and a
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE). The macOS app includes libusb (LGPL-2.1-or-later;
+its licence is bundled in the app).
 
 j5create is a trademark of its owner. This project is independent and uses the name only to
 identify the hardware it supports.

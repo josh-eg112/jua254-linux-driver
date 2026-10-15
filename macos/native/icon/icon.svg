@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- JUA254 Display app icon: a laptop with an extended second monitor. Source for icon.icns
+     (render with macos/native/icon/make_icon.sh). Follows the macOS icon grid: 824 pt tile on 1024. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3A6BFF"/>
+      <stop offset="1" stop-color="#11B8A5"/>
+    </linearGradient>
+    <linearGradient id="screenA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1B2440"/>
+      <stop offset="1" stop-color="#2C3A66"/>
+    </linearGradient>
+    <linearGradient id="screenB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD36B"/>
+      <stop offset="1" stop-color="#FF8A5C"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#001030" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- tile -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#FFFFFF" opacity="0.06"/>
+
+  <!-- second monitor (the adapter's display), back right -->
+  <g filter="url(#soft)" transform="translate(-6 -22)">
+    <rect x="404" y="232" width="440" height="300" rx="34" fill="#F4F7FF"/>
+    <rect x="428" y="256" width="392" height="232" rx="16" fill="url(#screenB)"/>
+    <!-- a window on the extended desktop -->
+    <rect x="470" y="300" width="190" height="124" rx="12" fill="#FFFFFF" opacity="0.92"/>
+    <rect x="470" y="300" width="190" height="26" rx="12" fill="#FFFFFF"/>
+    <circle cx="489" cy="313" r="6" fill="#FF6159"/>
+    <circle cx="508" cy="313" r="6" fill="#FFBD2E"/>
+    <circle cx="527" cy="313" r="6" fill="#28C941"/>
+    <!-- stand -->
+    <rect x="600" y="532" width="48" height="66" fill="#E2E8F7"/>
+    <rect x="540" y="590" width="168" height="22" rx="11" fill="#F4F7FF"/>
+  </g>
+
+  <!-- laptop, front left -->
+  <g filter="url(#soft)" transform="translate(14 -22)">
+    <rect x="200" y="452" width="400" height="262" rx="28" fill="#F4F7FF"/>
+    <rect x="222" y="474" width="356" height="210" rx="12" fill="url(#screenA)"/>
+    <rect x="252" y="508" width="150" height="96" rx="10" fill="#3A6BFF" opacity="0.85"/>
+    <rect x="420" y="540" width="128" height="110" rx="10" fill="#11B8A5" opacity="0.75"/>
+    <path d="M160 714 H640 L612 760 Q606 770 594 770 H206 Q194 770 188 760 Z" fill="#E2E8F7"/>
+    <rect x="356" y="714" width="88" height="12" rx="6" fill="#C9D2EA"/>
+  </g>
+
+</svg>
