@@ -16,6 +16,9 @@ final class Engine {
 
     let mode: Mode
     let fps: Double
+    /// Which adapter (nil: the first one found) and its number in the menu and display name.
+    let location: AdapterLocation?
+    let displayNumber: Int
     private let usbQueue = DispatchQueue(label: "jua254.usb")
     private let lock = NSLock()
     private var adapter: Adapter?
@@ -49,7 +52,9 @@ final class Engine {
     }
     private var received = 0
 
-    init(mode: Mode, fps: Double = 60) { self.mode = mode; self.fps = fps }
+    init(mode: Mode, fps: Double = 60, location: AdapterLocation? = nil, displayNumber: Int = 1) {
+        self.mode = mode; self.fps = fps; self.location = location; self.displayNumber = displayNumber
+    }
 
     func start() {
         usbQueue.async { self.open() }
@@ -71,7 +76,8 @@ final class Engine {
     private func open() {
         onStatus("Opening the adapter…", false)
         do {
-            guard let opened = try Adapter.open(waitingForHDMI: 10, waiting: { self.onStatus("Waiting for the HDMI monitor…", false) }) else {
+            guard let opened = try Adapter.open(waitingForHDMI: 10, at: location,
+                                                waiting: { self.onStatus("Waiting for the HDMI monitor…", false) }) else {
                 finish("JUA254 not found"); return
             }
             adapter = opened
@@ -82,7 +88,7 @@ final class Engine {
             finish(describe(error)); return
         }
         log("adapter open; capturing \(mode == .extended ? "a virtual display" : "the main display") at up to \(Int(fps)) frames/s")
-        let capture = ScreenCapture(fps: fps, onJPEG: { [weak self] in self?.enqueue($0) },
+        let capture = ScreenCapture(fps: fps, displayNumber: displayNumber, onJPEG: { [weak self] in self?.enqueue($0) },
                                     onError: { [weak self] in self?.finish($0) })
         self.capture = capture
         capture.start(mode == .extended ? .extended : .mirror(CGMainDisplayID())) { [weak self] display in

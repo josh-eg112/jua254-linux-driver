@@ -66,8 +66,13 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         return jpeg
     }
 
-    init(fps: Double = 60, quality: Double = 0.8, encoders: Int = 3,
+    /// 1 for the first adapter, 2 for the second...: names the virtual display ("JUA254", "JUA254 2")
+    /// and gives it its own serial number, so macOS remembers each one's arrangement.
+    private let displayNumber: Int
+
+    init(fps: Double = 60, quality: Double = 0.8, encoders: Int = 3, displayNumber: Int = 1,
          onJPEG: @escaping (Data) -> Void, onError: @escaping (String) -> Void) {
+        self.displayNumber = displayNumber
         self.fps = fps; self.quality = quality; self.encoders = encoders; self.adaptiveQuality = quality
         self.onJPEG = onJPEG; self.onError = onError
     }
@@ -92,13 +97,13 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private func createVirtualDisplay() -> CGDirectDisplayID? {
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.queue = DispatchQueue(label: "jua254.virtual-display")
-        descriptor.name = "JUA254"
+        descriptor.name = displayNumber == 1 ? "JUA254" : "JUA254 \(displayNumber)"
         descriptor.maxPixelsWide = UInt32(Self.width)
         descriptor.maxPixelsHigh = UInt32(Self.height)
         descriptor.sizeInMillimeters = CGSize(width: 527, height: 296)  // a 24" 16:9 panel
         descriptor.vendorID = UInt32(JUA254.vendorID)
         descriptor.productID = UInt32(JUA254.productID)
-        descriptor.serialNum = 1
+        descriptor.serialNum = UInt32(displayNumber)
         descriptor.terminationHandler = { [weak self] _, _ in self?.onError("the virtual display was removed") }
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = 0

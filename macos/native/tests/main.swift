@@ -63,5 +63,19 @@ for item in cases {
 }
 print("jpeg: \(cases.count) cases checked")
 
+// Display numbering for several adapters.
+do {
+    var known: [String: Int] = [:]
+    check(displayNumber(for: "20-3", known: &known, inUse: []) == 1, "first adapter is 1")
+    check(displayNumber(for: "20-4", known: &known, inUse: [1]) == 2, "second adapter is 2")
+    check(displayNumber(for: "20-4", known: &known, inUse: [1]) == 2, "a port keeps its number")
+    check(displayNumber(for: "20-4", known: &known, inUse: []) == 1, "a lone adapter is 1 in any port")
+    known = ["20-3": 1, "20-4": 2]
+    check(displayNumber(for: "20-3", known: &known, inUse: [2]) == 1, "remembered number reused when free")
+    check(displayNumber(for: "20-9", known: &known, inUse: [1, 2]) == 3, "third adapter is 3")
+    check(displayNumber(for: "20-3", known: &known, inUse: [1]) == 2, "taken number falls back to the lowest free")
+    print("numbering: checked")
+}
+
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
