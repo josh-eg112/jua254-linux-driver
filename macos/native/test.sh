@@ -7,6 +7,6 @@ mkdir -p build
 build/core-tests tests/golden
 if [[ "$(uname)" == Darwin ]]; then
   # Frame preparation (Accelerate/Core Image) exists only on macOS.
-  "${SWIFTC:-swiftc}" -swift-version 5 -O Frames.swift tests/frames_main.swift -o build/frames-tests
+  "${SWIFTC:-swiftc}" -swift-version 5 -O Frames.swift tests/frames/main.swift -o build/frames-tests
   build/frames-tests
 fi
