@@ -638,6 +638,10 @@ def connection_groups(records, template, jpeg, diagnostic_bootstrap=False, heade
     live = frame_records(template, jpeg, header) if live is None else live
     return [records, live] if diagnostic_bootstrap else [live]
 
+# Supported models: USB product ID -> model code (0xB0). Both are MCT Trigger 6 with the same
+# firmware (bcdDevice 0x1010), endpoints, 58 MB VRAM and mode table (checked 2026-10-16).
+MODELS = {0x5600: b"JUA254H", 0x5601: b"A8640H"}
+
 def usb_location(dev):
     """A device's USB location as Linux names it in sysfs: "bus-port.port" (e.g. "2-1" or "2-1.3")."""
     return f"{dev.bus}-" + ".".join(str(n) for n in (dev.port_numbers or ()))
@@ -646,8 +650,9 @@ def find_adapter(location=None, backend=None, find=None):
     """The JUA254 at `location` (or the first one), or None."""
     import usb.core
     find = find or usb.core.find
-    if location is None: return find(idVendor=VID,idProduct=PID,backend=backend)
-    return next((d for d in find(find_all=True,idVendor=VID,idProduct=PID,backend=backend) if usb_location(d)==location), None)
+    supported=lambda d: d.idProduct in MODELS
+    if location is None: return find(idVendor=VID,custom_match=supported,backend=backend)
+    return next((d for d in find(find_all=True,idVendor=VID,custom_match=supported,backend=backend) if usb_location(d)==location), None)
 
 def open_device(video_mode=None, location=None):
     import usb.backend.libusb1, usb.core, usb.util
@@ -662,7 +667,7 @@ def open_device(video_mode=None, location=None):
             blob=bytes(dev.ctrl_transfer(0xC0,0x89,0,0x0340,32,timeout=2000)); expected=MODE_1080P60
         else:
             blob=find_mode_blob(dev,video_mode); expected=blob
-        if project!=b"JUA254H" or status!=b"\x01" or blob is None or blob!=expected:
+        if project!=MODELS.get(dev.idProduct) or status!=b"\x01" or blob is None or blob!=expected:
             raise RuntimeError(f"JUA254 identity/HDMI/mode check failed: project={project!r} hdmi={status.hex()} "
                                f"mode={video_mode or '1920x1080@60'} mode_ok={blob is not None and blob==expected}")
         dev.ctrl_transfer(0x40,0x03,0,0,None,timeout=2000); time.sleep(.25)

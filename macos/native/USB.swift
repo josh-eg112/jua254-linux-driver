@@ -36,7 +36,7 @@ final class Adapter {
             guard let device = devices[i] else { continue }
             var descriptor = libusb_device_descriptor()
             guard libusb_get_device_descriptor(device, &descriptor) == 0,
-                  descriptor.idVendor == JUA254.vendorID, descriptor.idProduct == JUA254.productID else { continue }
+                  descriptor.idVendor == JUA254.vendorID, JUA254.models[descriptor.idProduct] != nil else { continue }
             var ports = [UInt8](repeating: 0, count: 8)
             let depth = libusb_get_port_numbers(device, &ports, Int32(ports.count))
             found.append((device, AdapterLocation(bus: libusb_get_bus_number(device), ports: Array(ports.prefix(max(0, Int(depth)))))))
@@ -51,16 +51,15 @@ final class Adapter {
     /// Opens and claims the adapter at `location` (or the first one); nil when it is not attached.
     private init?(context: OpaquePointer, location: AdapterLocation?) throws {
         var opening: OpaquePointer?
-        if let location = location {
-            let status: Int32 = Self.withAdapters(context) { adapters in
-                guard let device = adapters.first(where: { $0.1 == location })?.0 else { return Int32(LIBUSB_ERROR_NOT_FOUND.rawValue) }
-                return libusb_open(device, &opening)
+        let status: Int32 = Self.withAdapters(context) { adapters in
+            // The adapter at `location`, or the first supported one when no location is given.
+            guard let device = adapters.first(where: { location == nil || $0.1 == location })?.0 else {
+                return Int32(LIBUSB_ERROR_NOT_FOUND.rawValue)
             }
-            if status == Int32(LIBUSB_ERROR_NOT_FOUND.rawValue) { return nil }
-            if status != 0 { throw Self.error(status, "open") }
-        } else {
-            opening = libusb_open_device_with_vid_pid(context, JUA254.vendorID, JUA254.productID)
+            return libusb_open(device, &opening)
         }
+        if status == Int32(LIBUSB_ERROR_NOT_FOUND.rawValue) { return nil }
+        if status != 0 { throw Self.error(status, "open") }
         guard let opened = opening else { return nil }
         // Own the context only once the device is open: deinit runs even when init returns nil.
         self.context = context
@@ -82,7 +81,7 @@ final class Adapter {
         do {
             let project = try adapter.controlIn(request: 0xB0, value: 0, index: 3, length: 16)
             let name = String(decoding: project.prefix { $0 != 0 }, as: UTF8.self)
-            guard name == JUA254.projectCode else { throw AdapterError.protocolFailure("not a JUA254 (project \(name))") }
+            guard JUA254.models.values.contains(name) else { throw AdapterError.protocolFailure("unsupported adapter model \(name)") }
             guard try adapter.controlIn(request: 0x87, value: 0, index: 0, length: 1) == Data([1]) else { throw AdapterError.noHDMI }
             let mode = try adapter.controlIn(request: 0x89, value: 0, index: 0x0340, length: 32)
             guard mode == JUA254.mode1080p60 else { throw AdapterError.protocolFailure("unexpected 1080p60 mode entry") }

@@ -8,6 +8,7 @@ from jua254_diagnostics import DiagnosticsState
 STATE_DIR = Path(os.environ.get("JUA254_STATE_DIR", Path.home() / ".local/state/jua254"))
 OWNERSHIP_FILE = STATE_DIR / "headless-outputs.json"
 HEADLESS_PREFIXES = ("HEADLESS-", "VIRTUAL-")
+SUPPORTED_PRODUCTS = ("5600", "5601")  # JUA254 and A8640H (same MCT Trigger 6 hardware)
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "shared/handoff/linux-rgb-bars-20260825"
 
 def hypr(*args):
@@ -32,7 +33,7 @@ def device_present():
     """Read-only VID/PID check; never opens or resets the adapter."""
     for vendor in Path("/sys/bus/usb/devices").glob("*/idVendor"):
         try:
-            if vendor.read_text().strip().lower() == "0711" and (vendor.parent / "idProduct").read_text().strip().lower() == "5600":
+            if vendor.read_text().strip().lower() == "0711" and (vendor.parent / "idProduct").read_text().strip().lower() in SUPPORTED_PRODUCTS:
                 return True
         except OSError:
             pass
@@ -43,7 +44,7 @@ def attached_locations(root=Path("/sys/bus/usb/devices")):
     found = []
     for vendor in root.glob("*/idVendor"):
         try:
-            if vendor.read_text().strip().lower() == "0711" and (vendor.parent / "idProduct").read_text().strip().lower() == "5600":
+            if vendor.read_text().strip().lower() == "0711" and (vendor.parent / "idProduct").read_text().strip().lower() in SUPPORTED_PRODUCTS:
                 found.append(vendor.parent.name)
         except OSError:
             pass

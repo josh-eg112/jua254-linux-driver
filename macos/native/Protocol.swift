@@ -10,6 +10,9 @@ enum JUA254 {
     static let interface: Int32 = 0
     static let bulkOutEndpoint: UInt8 = 0x02
     static let projectCode = "JUA254H"
+    /// Supported models: USB product ID -> model code (0xB0). Both are MCT Trigger 6 with the same
+    /// firmware (bcdDevice 0x1010), endpoints, 58 MB VRAM and mode table (checked 2026-10-16).
+    static let models: [UInt16: String] = [0x5600: "JUA254H", 0x5601: "A8640H"]
     /// 0x89 mode-table entry at wIndex 0x0340: 1920x1080@60.
     static let mode1080p60 = Data(hex: "144402003c0098088007d8072c00650438043c040500bb02e8031d0101010000")
 
