@@ -100,6 +100,7 @@ final class Engine {
         log("adapter open; capturing \(mode == .extended ? "a virtual display" : "the main display") at \(videoMode), up to \(Int(fps)) frames/s")
         let capture = ScreenCapture(fps: fps, displayNumber: displayNumber, size: videoMode, onJPEG: { [weak self] in self?.enqueue($0) },
                                     onError: { [weak self] in self?.finish($0) })
+        capture.onLog = { [weak self] in self?.log($0) }
         self.capture = capture
         capture.start(mode == .extended ? .extended : .mirror(CGMainDisplayID())) { [weak self] display in
             guard let self = self else { return }

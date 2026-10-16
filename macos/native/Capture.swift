@@ -23,6 +23,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let encoders: Int
     private let onJPEG: (Data) -> Void
     private let onError: (String) -> Void
+    var onLog: (String) -> Void = { _ in }
     private var virtualDisplay: CGVirtualDisplay?
     private var scStream: SCStream?
     private let encodeQueue = DispatchQueue(label: "jua254.encode", attributes: .concurrent)
@@ -78,6 +79,10 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let displayNumber: Int
     /// The adapter's output size; frames are captured and encoded at exactly this size.
     private let width: Int, height: Int
+    /// Width of the portrait desktop: the adapter's height rounded up to a multiple of 8, since macOS
+    /// drops display modes whose width isn't one (1050 x 1680 is never offered; 1080 x 1920 is). The
+    /// extra columns are cropped off when capturing, half on each side.
+    private var portraitWidth: Int { (height + 7) / 8 * 8 }
 
     init(fps: Double = 60, quality: Double = 0.8, encoders: Int = 3, displayNumber: Int = 1, size: VideoMode = .standard,
          onJPEG: @escaping (Data) -> Void, onError: @escaping (String) -> Void) {
@@ -119,9 +124,11 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         settings.hiDPI = 0
         // Landscape, plus portrait for a monitor turned on its side (chosen in System Settings > Displays).
         settings.modes = [CGVirtualDisplayMode(width: UInt(width), height: UInt(height), refreshRate: 60),
-                          CGVirtualDisplayMode(width: UInt(height), height: UInt(width), refreshRate: 60)]
+                          CGVirtualDisplayMode(width: UInt(portraitWidth), height: UInt(width), refreshRate: 60)]
         guard let display = CGVirtualDisplay(descriptor: descriptor), display.apply(settings), display.displayID != 0 else { return nil }
         virtualDisplay = display
+        let offered = (CGDisplayCopyAllDisplayModes(display.displayID, nil) as? [CGDisplayMode] ?? []).map { "\($0.pixelWidth)x\($0.pixelHeight)" }
+        onLog("virtual display modes offered by macOS: \(offered.joined(separator: ", "))")
         return display.displayID
     }
 
@@ -146,6 +153,11 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             let configuration = SCStreamConfiguration()
             configuration.width = portrait ? self.height : self.width
             configuration.height = portrait ? self.width : self.height
+            let extra = self.portraitWidth - self.height
+            if portrait && extra > 0 && CGDisplayPixelsWide(wanted) == self.portraitWidth {
+                // Crop the rounding columns so the frame is exactly the adapter's size, unscaled.
+                configuration.sourceRect = CGRect(x: extra / 2, y: 0, width: self.height, height: self.width)
+            }
             configuration.pixelFormat = kCVPixelFormatType_32BGRA
             configuration.minimumFrameInterval = CMTime(seconds: 1 / self.fps, preferredTimescale: 600)
             configuration.queueDepth = 8  // frames being encoded still hold their capture buffers
