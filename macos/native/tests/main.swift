@@ -46,6 +46,27 @@ do {
     check(false, "a JPEG over capacity was framed")
 } catch {}
 
+// Other output modes: VRAM layout and framing match VideoMode/LiveFramer in the Python driver.
+let modes = try JSONSerialization.jsonObject(with: Data(contentsOf: golden.appendingPathComponent("modes.json"))) as! [String: Any]
+check(VideoMode(modeEntry: Data(hex: modes["mode_1080p60_entry"] as! String)) == .standard, "1080p60 mode entry decodes")
+for item in modes["modes"] as! [[String: Any]] {
+    let name = item["mode"] as! String
+    guard let mode = VideoMode(name) else { check(false, "parse \(name)"); continue }
+    check(mode.description == name && mode.isSupported, "\(name): parsed and supported")
+    check(mode.ringBase == item["ring_base"] as! Int, "\(name): ring base \(mode.ringBase)")
+    let slots = (item["slots"] as! [[Int]]).map { (UInt32($0[0]), UInt32($0[1])) }
+    check(zip(mode.slots, slots).allSatisfy { $0 == $1 }, "\(name): buffer slots")
+    var framer = try Framer(vramMB: 58, mode: mode)
+    for (n, frame) in (item["frames"] as! [[String: Any]]).enumerated() {
+        let expected = frame["transfers"] as! [[Any]]
+        let group = try framer.group(jpeg: payload(n, frame["size"] as! Int))
+        check(group.count == expected.count && zip(group, expected).allSatisfy { fnv($0.data) == $1[1] as! String },
+              "\(name) frame \(n): bytes differ")
+    }
+}
+check(!VideoMode(width: 1366, height: 768, refresh: 60).isSupported, "1366 wide (not a multiple of 16) is rejected")
+print("modes: \((modes["modes"] as! [Any]).count) modes checked")
+
 // JPEG checks: same accept/reject decisions and output bytes as adapter_jpeg().
 let cases = try JSONSerialization.jsonObject(with: Data(contentsOf: golden.appendingPathComponent("jpeg.json"))) as! [[String: Any]]
 for item in cases {

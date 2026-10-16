@@ -19,6 +19,8 @@ final class Slot {
     var lastSent = 0, lastSample = Date()
     var lastStats = Engine.Stats()
     var ticksSinceStats = 0
+    /// The output mode this session was started with.
+    var videoMode = VideoMode.standard
 
     init(location: AdapterLocation, number: Int) { self.location = location; self.number = number }
     var label: String { number == 1 ? "JUA254" : "JUA254 \(number)" }
@@ -35,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
     let rotateLeftItem = NSMenuItem(title: "Rotate Left", action: #selector(chooseRotateLeft), keyEquivalent: "")
     let rotateRightItem = NSMenuItem(title: "Rotate Right", action: #selector(chooseRotateRight), keyEquivalent: "")
+    let resolutionMenu = NSMenu()
 
     let defaults = UserDefaults.standard
     let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/JUA254/display.log")
@@ -54,12 +57,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { defaults.object(forKey: "autoStart") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "autoStart") }
     }
-    /// How a portrait desktop (1080x1920, picked in System Settings > Displays) is turned for a
+    /// How a portrait desktop (e.g. 1080x1920, picked in System Settings > Displays) is turned for a
     /// monitor on its side. If the picture is upside down, choose the other one.
     var portraitRotation: ScreenCapture.PortraitRotation {
         get { ScreenCapture.PortraitRotation(rawValue: defaults.string(forKey: "portraitRotation") ?? "") ?? .right }
         set { defaults.set(newValue.rawValue, forKey: "portraitRotation") }
     }
+    /// The output mode chosen for each adapter (by display number), for monitors that can't show
+    /// 1920x1080: "1680x1050@60". Missing means 1920x1080@60.
+    func videoMode(for number: Int) -> VideoMode {
+        (defaults.dictionary(forKey: "resolutions")?[String(number)] as? String).flatMap(VideoMode.init) ?? .standard
+    }
+    func setVideoMode(_ mode: VideoMode, for number: Int) {
+        var chosen = defaults.dictionary(forKey: "resolutions") ?? [:]
+        chosen[String(number)] = mode == .standard ? nil : mode.description
+        defaults.set(chosen, forKey: "resolutions")
+    }
+    /// The modes each adapter's table offers (by display number), remembered from its last start.
+    func offeredModes(for number: Int) -> [VideoMode] {
+        (defaults.dictionary(forKey: "offeredModes")?[String(number)] as? [String] ?? []).compactMap(VideoMode.init)
+    }
+    func rememberOfferedModes(_ modes: [VideoMode], for number: Int) {
+        var known = defaults.dictionary(forKey: "offeredModes") ?? [:]
+        known[String(number)] = modes.map { $0.description }
+        defaults.set(known, forKey: "offeredModes")
+    }
+
     var running: [Slot] { slots.values.filter { $0.engine != nil } }
     var ordered: [Slot] { slots.values.sorted { $0.number < $1.number } }
 
@@ -103,8 +126,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rotationMenu.addItem(rotateRightItem)
         let rotationItem = NSMenuItem(title: "Portrait Rotation", action: nil, keyEquivalent: "")
         rotationItem.submenu = rotationMenu
-        rotationItem.toolTip = "For a monitor turned on its side: choose 1080 \u{00D7} 1920 for it in System Settings > Displays"
+        rotationItem.toolTip = "For a monitor turned on its side: choose its portrait size (e.g. 1080 \u{00D7} 1920) in System Settings > Displays"
         menu.addItem(rotationItem)
+        let resolutionItem = NSMenuItem(title: "Resolution", action: nil, keyEquivalent: "")
+        resolutionItem.submenu = resolutionMenu
+        resolutionItem.toolTip = "The adapter's output resolution: choose what its monitor supports"
+        menu.addItem(resolutionItem)
         menu.addItem(.separator())
         menu.addItem(autoItem)
         if #available(macOS 13.0, *) { menu.addItem(loginItem) }
@@ -180,7 +207,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func start(_ slot: Slot) {
         guard slot.engine == nil else { return }
-        let engine = Engine(mode: mirrorMode ? .mirror : .extended, location: slot.location, displayNumber: slot.number)
+        slot.videoMode = videoMode(for: slot.number)
+        let engine = Engine(mode: mirrorMode ? .mirror : .extended, location: slot.location, displayNumber: slot.number,
+                            videoMode: slot.videoMode)
+        engine.onModes = { [weak self, weak slot] modes in
+            DispatchQueue.main.async {
+                guard let slot = slot else { return }
+                self?.rememberOfferedModes(modes, for: slot.number)
+                self?.refreshMenu()
+            }
+        }
         engine.log = { [weak self, weak slot] text in self?.log("\(slot?.label ?? "JUA254"): \(text)") }
         engine.onStatus = { [weak self, weak slot] text, active in
             DispatchQueue.main.async {
@@ -196,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         slot.engine = engine
         slot.lastSent = 0; slot.lastSample = Date(); slot.lastStats = Engine.Stats(); slot.ticksSinceStats = 0
-        log("--- \(slot.label) starting (\(mirrorMode ? "mirror" : "extended desktop"), port \(slot.location)) ---")
+        log("--- \(slot.label) starting (\(mirrorMode ? "mirror" : "extended desktop"), \(slot.videoMode), port \(slot.location)) ---")
         engine.start()
         refreshMenu()
     }
@@ -295,6 +331,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshMenu()
     }
 
+    @objc func chooseResolution(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? [Any], let number = choice[0] as? Int,
+              let mode = (choice[1] as? String).flatMap(VideoMode.init) else { return }
+        setVideoMode(mode, for: number)
+        log("JUA254\(number == 1 ? "" : " \(number)") resolution set to \(mode)")
+        // Restart that adapter's session (if it is running) in the new mode.
+        if let slot = slots.values.first(where: { $0.number == number }), slot.engine != nil, slot.videoMode != mode {
+            stop(slot) { if self.slots[slot.location] === slot { slot.failuresInRow = 0; self.start(slot) } }
+        } else if let slot = slots.values.first(where: { $0.number == number }) {
+            slot.failuresInRow = 0; slot.nextAttempt = .distantPast  // a failed mode can be retried at once
+        }
+        refreshMenu()
+    }
+
+    /// One group per attached adapter: the modes its table offers (once it has been started), with
+    /// the chosen one ticked. Wider modes first.
+    func refreshResolutionMenu() {
+        resolutionMenu.removeAllItems()
+        if slots.isEmpty {
+            let item = NSMenuItem(title: "Plug in the adapter first", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            resolutionMenu.addItem(item)
+            return
+        }
+        for slot in ordered {
+            let chosen = videoMode(for: slot.number)
+            var modes = offeredModes(for: slot.number)
+            if !modes.contains(chosen) { modes.append(chosen) }
+            if !modes.contains(.standard) { modes.append(.standard) }
+            modes.sort { ($0.width * $0.height, $0.refresh) > ($1.width * $1.height, $1.refresh) }
+            if slots.count > 1 {
+                if resolutionMenu.numberOfItems > 0 { resolutionMenu.addItem(.separator()) }
+                let header = NSMenuItem(title: slot.label, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                resolutionMenu.addItem(header)
+            }
+            for mode in modes {
+                var title = "\(mode.width) \u{00D7} \(mode.height), \(mode.refresh) Hz"
+                if mode == .standard { title += " (default)" }
+                let item = NSMenuItem(title: title, action: #selector(chooseResolution(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [slot.number, mode.description] as [Any]
+                item.state = mode == chosen ? .on : .off
+                if slots.count > 1 { item.indentationLevel = 1 }
+                resolutionMenu.addItem(item)
+            }
+        }
+    }
+
     @objc func toggleAuto() {
         autoStart.toggle()
         refreshMenu()
@@ -318,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
-    func menuWillOpen(_ menu: NSMenu) { refreshMenu() }
+    func menuWillOpen(_ menu: NSMenu) { refreshMenu(); refreshResolutionMenu() }
 
     func refreshMenu() {
         // Status: one line per adapter (prefixed with its name when there are several), or a notice.

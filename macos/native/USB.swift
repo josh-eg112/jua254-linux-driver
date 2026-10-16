@@ -70,9 +70,20 @@ final class Adapter {
         claimed = true
     }
 
-    /// Open the adapter, verify it is a JUA254H with an HDMI sink and the 1080p60 mode entry, and
+    /// Output modes in the adapter's table that the framer can drive, read when it was opened.
+    private(set) var modes: [VideoMode] = []
+
+    /// Read-only scan of the 0x89 mode table: each entry's mode and its 32-byte blob.
+    private func modeTable() throws -> [(VideoMode, Data)] {
+        try (0..<JUA254.modeTableEntries).map { n in
+            let blob = try controlIn(request: 0x89, value: 0, index: UInt16(n * 32), length: 32)
+            return (VideoMode(modeEntry: blob), blob)
+        }
+    }
+
+    /// Open the adapter, verify it is a supported model with an HDMI sink and the mode entry, and
     /// set that mode, as open_device() does. Throws .noHDMI when no monitor is reported.
-    static func open(at location: AdapterLocation? = nil) throws -> Adapter? {
+    static func open(at location: AdapterLocation? = nil, mode: VideoMode = .standard) throws -> Adapter? {
         var context: OpaquePointer?
         guard libusb_init(&context) == 0, let context = context else { throw AdapterError.usb("libusb_init failed") }
         let made: Adapter?
@@ -83,11 +94,22 @@ final class Adapter {
             let name = String(decoding: project.prefix { $0 != 0 }, as: UTF8.self)
             guard JUA254.models.values.contains(name) else { throw AdapterError.protocolFailure("unsupported adapter model \(name)") }
             guard try adapter.controlIn(request: 0x87, value: 0, index: 0, length: 1) == Data([1]) else { throw AdapterError.noHDMI }
-            let mode = try adapter.controlIn(request: 0x89, value: 0, index: 0x0340, length: 32)
-            guard mode == JUA254.mode1080p60 else { throw AdapterError.protocolFailure("unexpected 1080p60 mode entry") }
+            let table = try adapter.modeTable()
+            var seen = Set<VideoMode>()
+            adapter.modes = table.map { $0.0 }.filter { $0.isSupported && seen.insert($0).inserted }
+            let blob: Data
+            if mode == .standard {
+                blob = try adapter.controlIn(request: 0x89, value: 0, index: 0x0340, length: 32)
+                guard blob == JUA254.mode1080p60 else { throw AdapterError.protocolFailure("unexpected 1080p60 mode entry") }
+            } else {
+                guard mode.isSupported, let entry = table.first(where: { $0.0 == mode }) else {
+                    throw AdapterError.protocolFailure("the adapter has no \(mode) mode")
+                }
+                blob = entry.1
+            }
             try adapter.controlOut(request: 0x03, value: 0)
             Thread.sleep(forTimeInterval: 0.25)
-            try adapter.controlOut(request: 0x12, value: 0, data: mode)
+            try adapter.controlOut(request: 0x12, value: 0, data: blob)
             Thread.sleep(forTimeInterval: 0.25)
             try adapter.controlOut(request: 0x03, value: 0, index: 1)  // enable output: wIndex=1, as ctrl_transfer(0x40,0x03,0,1)
             return adapter
@@ -99,11 +121,12 @@ final class Adapter {
 
     /// Open, waiting up to `seconds` while the adapter reports no HDMI sink (it does for about a
     /// second after being plugged in). `waiting` is called once if it has to wait.
-    static func open(waitingForHDMI seconds: Double, at location: AdapterLocation? = nil, waiting: () -> Void = {}) throws -> Adapter? {
+    static func open(waitingForHDMI seconds: Double, at location: AdapterLocation? = nil, mode: VideoMode = .standard,
+                     waiting: () -> Void = {}) throws -> Adapter? {
         let deadline = Date().addingTimeInterval(seconds)
         var announced = false
         while true {
-            do { return try open(at: location) } catch AdapterError.noHDMI where Date() < deadline {
+            do { return try open(at: location, mode: mode) } catch AdapterError.noHDMI where Date() < deadline {
                 if !announced { waiting(); announced = true }
                 Thread.sleep(forTimeInterval: 0.5)
             }

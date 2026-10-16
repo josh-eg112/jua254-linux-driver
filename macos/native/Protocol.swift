@@ -18,6 +18,8 @@ enum JUA254 {
 
     /// Largest JPEG whose sized transfer fits the captured 471008-byte envelope.
     static let capacity = 469_936
+    /// 0x89 entries 0..29 are output modes (wIndex n*32); later bytes are other data.
+    static let modeTableEntries = 30
     static let chunkBytes = 102_400
     static let sizedPadBytes = 1024
     static let commandRingBase = 0x230_0000
@@ -134,11 +136,60 @@ func framedGroup(jpeg: Data, header: Data, total: Int, address: Int, reset: Bool
 
 /// Builds each frame's transfers the way the Linux production streamer does (rotation, sized
 /// payloads, command ring), for the default 1920x1080@60 mode.
+/// An adapter output mode and the VRAM layout derived from it, as VideoMode in jua254_stream.py:
+/// the three buffer bases stay where Windows put them, each UV plane follows its Y plane after
+/// pitch * align16(height) bytes, and the command ring starts at the first 1 MiB boundary above the
+/// third UV plane. 1920x1080@60 gives exactly the captured slots and ring base.
+struct VideoMode: Hashable, CustomStringConvertible {
+    let width: Int, height: Int, refresh: Int
+    static let standard = VideoMode(width: 1920, height: 1080, refresh: 60)
+    static let frameSlotStride = 0xfffec0
+
+    var description: String { "\(width)x\(height)@\(refresh)" }
+    var pitch: Int { width }
+    private var plane: Int { pitch * ((height + 15) / 16 * 16) }
+    /// Width a multiple of 16 and the NV12 frame fits a buffer slot.
+    var isSupported: Bool { width > 0 && height > 0 && width % 16 == 0 && plane * 3 / 2 <= Self.frameSlotStride }
+    var slots: [(UInt32, UInt32)] { JUA254.rotationSlots.map { ($0.0, $0.0 + UInt32(plane)) } }
+    var ringBase: Int {
+        let end = Int(slots[slots.count - 1].1) + plane / 2
+        return (end + (1 << 20) - 1) & ~((1 << 20) - 1)
+    }
+    /// The template type-3 header with this mode's pitch (word 4) and first buffer (words 5/6).
+    func header(_ template: Data = Template.header) -> Data {
+        var header = template
+        header.setU32(UInt32(pitch | (pitch << 16)), at: 16)
+        header.setU32(slots[0].0, at: 20)
+        header.setU32(slots[0].1, at: 24)
+        return header
+    }
+
+    init(width: Int, height: Int, refresh: Int) { self.width = width; self.height = height; self.refresh = refresh }
+
+    /// "1680x1050@60" -> mode, or nil.
+    init?(_ text: String) {
+        let parts = text.split(whereSeparator: { $0 == "x" || $0 == "@" }).compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        self.init(width: parts[0], height: parts[1], refresh: parts[2])
+    }
+
+    /// (hactive, vactive, refresh) of one 32-byte 0x89 mode-table entry, as decode_mode_entry().
+    init(modeEntry blob: Data) {
+        let refresh = Int(blob.u16(at: 4)), width = Int(blob.u16(at: 8)), height = Int(blob.u16(at: 16))
+        self.init(width: width, height: height, refresh: refresh)
+    }
+}
+
+/// Builds each frame's transfers the way the Linux production streamer does (rotation, sized
+/// payloads, command ring) for one output mode.
 struct Framer {
-    var rotation = FramebufferRotation()
+    var rotation: FramebufferRotation
     var ring: CommandRing
 
-    init(vramMB: Int) throws { ring = try CommandRing(vramMB: vramMB) }
+    init(vramMB: Int, mode: VideoMode = .standard) throws {
+        rotation = FramebufferRotation(templateHeader: mode.header(), slots: mode.slots)
+        ring = try CommandRing(vramMB: vramMB, base: mode.ringBase)
+    }
 
     mutating func group(jpeg: Data) throws -> [Transfer] {
         let header = rotation.nextHeader()
@@ -180,6 +231,11 @@ extension Data {
             index = next
         }
         self.init(bytes)
+    }
+
+    func u16(at offset: Int) -> UInt16 {
+        let i = startIndex + offset
+        return UInt16(self[i]) | UInt16(self[i + 1]) << 8
     }
 
     func u32(at offset: Int) -> UInt32 {

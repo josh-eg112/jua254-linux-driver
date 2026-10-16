@@ -19,6 +19,10 @@ final class Engine {
     /// Which adapter (nil: the first one found) and its number in the menu and display name.
     let location: AdapterLocation?
     let displayNumber: Int
+    /// The adapter's output mode, and the same size for the virtual display.
+    let videoMode: VideoMode
+    /// The modes the adapter offers, reported once it is open (for the Resolution menu).
+    var onModes: ([VideoMode]) -> Void = { _ in }
     private let usbQueue = DispatchQueue(label: "jua254.usb")
     private let lock = NSLock()
     private var adapter: Adapter?
@@ -52,8 +56,8 @@ final class Engine {
     }
     private var received = 0
 
-    init(mode: Mode, fps: Double = 60, location: AdapterLocation? = nil, displayNumber: Int = 1) {
-        self.mode = mode; self.fps = fps; self.location = location; self.displayNumber = displayNumber
+    init(mode: Mode, fps: Double = 60, location: AdapterLocation? = nil, displayNumber: Int = 1, videoMode: VideoMode = .standard) {
+        self.mode = mode; self.fps = fps; self.location = location; self.displayNumber = displayNumber; self.videoMode = videoMode
     }
 
     /// Keep capture in step with the display's orientation (see ScreenCapture.refreshOrientation).
@@ -81,19 +85,20 @@ final class Engine {
     private func open() {
         onStatus("Opening the adapter…", false)
         do {
-            guard let opened = try Adapter.open(waitingForHDMI: 10, at: location,
+            guard let opened = try Adapter.open(waitingForHDMI: 10, at: location, mode: videoMode,
                                                 waiting: { self.onStatus("Waiting for the HDMI monitor…", false) }) else {
                 finish("JUA254 not found"); return
             }
             adapter = opened
-            framer = try Framer(vramMB: opened.vramMB())
+            framer = try Framer(vramMB: opened.vramMB(), mode: videoMode)
+            onModes(opened.modes)
         } catch AdapterError.noHDMI {
             finish("No HDMI monitor on the adapter — check the cable"); return
         } catch {
             finish(describe(error)); return
         }
-        log("adapter open; capturing \(mode == .extended ? "a virtual display" : "the main display") at up to \(Int(fps)) frames/s")
-        let capture = ScreenCapture(fps: fps, displayNumber: displayNumber, onJPEG: { [weak self] in self?.enqueue($0) },
+        log("adapter open; capturing \(mode == .extended ? "a virtual display" : "the main display") at \(videoMode), up to \(Int(fps)) frames/s")
+        let capture = ScreenCapture(fps: fps, displayNumber: displayNumber, size: videoMode, onJPEG: { [weak self] in self?.enqueue($0) },
                                     onError: { [weak self] in self?.finish($0) })
         self.capture = capture
         capture.start(mode == .extended ? .extended : .mirror(CGMainDisplayID())) { [weak self] display in
@@ -132,7 +137,7 @@ final class Engine {
     private func send(_ jpeg: Data) {
         guard let adapter = adapter else { return }
         do {
-            let clean = try adapterJPEG(jpeg)
+            let clean = try adapterJPEG(jpeg, width: videoMode.width, height: videoMode.height)
             let wait = lastStart.addingTimeInterval(1 / fps).timeIntervalSinceNow
             if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             lastStart = Date()
