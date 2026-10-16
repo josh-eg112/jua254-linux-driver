@@ -4,13 +4,11 @@
 // are dropped. Ported from macos/sck_capture.swift.
 
 import CoreGraphics
-import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
 import ImageIO
 import ScreenCaptureKit
-import VideoToolbox
 
 final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     enum Source { case extended, mirror(CGDirectDisplayID) }
@@ -38,7 +36,6 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var capturedDisplay: CGDirectDisplayID?
     private var portrait = false
     private var rotation = PortraitRotation.right
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var reencodes = 0
     // Counters for the stats log, guarded by `lock`.
     private var delivered = 0, encoded = 0, encodeMs = 0.0
@@ -209,15 +206,9 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let order = sequence
         lock.unlock()
         lock.lock(); let turn = portrait ? rotation : nil; lock.unlock()
-        var image: CGImage?
-        if let turn = turn {
-            // Portrait desktop -> landscape frame for the sideways monitor; rendered now, while the
-            // capture buffer is still ours.
-            let upright = CIImage(cvPixelBuffer: pixels).oriented(turn == .right ? .right : .left)
-            image = ciContext.createCGImage(upright, from: upright.extent)
-        } else {
-            VTCreateCGImageFromCVPixelBuffer(pixels, options: nil, imageOut: &image)
-        }
+        // Portrait desktop -> landscape frame for the sideways monitor (turned now, into a copy);
+        // a landscape frame is used in place. Both are opaque, which spares the encoder a pass.
+        let image = turn.map { Frames.rotated(pixels, clockwise: $0 == .right) } ?? Frames.image(pixels)
         encodeQueue.async {
             let started = Date()
             var jpeg: Data?
