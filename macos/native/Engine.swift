@@ -56,6 +56,11 @@ final class Engine {
         self.mode = mode; self.fps = fps; self.location = location; self.displayNumber = displayNumber
     }
 
+    /// Keep capture in step with the display's orientation (see ScreenCapture.refreshOrientation).
+    func refreshOrientation(rotation: ScreenCapture.PortraitRotation) {
+        capture?.refreshOrientation(rotation: rotation)
+    }
+
     func start() {
         usbQueue.async { self.open() }
     }

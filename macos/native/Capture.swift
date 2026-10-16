@@ -4,6 +4,7 @@
 // are dropped. Ported from macos/sck_capture.swift.
 
 import CoreGraphics
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -15,6 +16,9 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     static let width = 1920, height = 1080
 
     enum Source { case extended, mirror(CGDirectDisplayID) }
+    /// Which way a portrait (1080x1920) desktop is turned to fill the adapter's 1920x1080 output,
+    /// matching the way the monitor is turned on its side.
+    enum PortraitRotation: String { case left, right }
 
     private let fps: Double
     private let quality: Double
@@ -31,6 +35,11 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     /// JPEG quality in use: starts at `quality`, drops when detailed frames exceed the adapter's
     /// upload slot, and creeps back up while frames are comfortably small. Guarded by `lock`.
     private var adaptiveQuality: Double
+    // Orientation: the captured display, whether it is in its portrait mode, and the rotation used.
+    private var capturedDisplay: CGDirectDisplayID?
+    private var portrait = false
+    private var rotation = PortraitRotation.right
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var reencodes = 0
     // Counters for the stats log, guarded by `lock`.
     private var delivered = 0, encoded = 0, encodeMs = 0.0
@@ -99,7 +108,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         descriptor.queue = DispatchQueue(label: "jua254.virtual-display")
         descriptor.name = displayNumber == 1 ? "JUA254" : "JUA254 \(displayNumber)"
         descriptor.maxPixelsWide = UInt32(Self.width)
-        descriptor.maxPixelsHigh = UInt32(Self.height)
+        descriptor.maxPixelsHigh = UInt32(Self.width)  // room for the portrait mode
         descriptor.sizeInMillimeters = CGSize(width: 527, height: 296)  // a 24" 16:9 panel
         descriptor.vendorID = UInt32(JUA254.vendorID)
         descriptor.productID = UInt32(JUA254.productID)
@@ -107,7 +116,9 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         descriptor.terminationHandler = { [weak self] _, _ in self?.onError("the virtual display was removed") }
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = 0
-        settings.modes = [CGVirtualDisplayMode(width: UInt(Self.width), height: UInt(Self.height), refreshRate: 60)]
+        // Landscape, plus portrait for a monitor turned on its side (chosen in System Settings > Displays).
+        settings.modes = [CGVirtualDisplayMode(width: UInt(Self.width), height: UInt(Self.height), refreshRate: 60),
+                          CGVirtualDisplayMode(width: UInt(Self.height), height: UInt(Self.width), refreshRate: 60)]
         guard let display = CGVirtualDisplay(descriptor: descriptor), display.apply(settings), display.displayID != 0 else { return nil }
         virtualDisplay = display
         return display.displayID
@@ -129,9 +140,11 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
                 return
             }
+            let portrait = CGDisplayPixelsHigh(wanted) > CGDisplayPixelsWide(wanted)
+            self.lock.lock(); self.portrait = portrait; self.capturedDisplay = wanted; self.lock.unlock()
             let configuration = SCStreamConfiguration()
-            configuration.width = Self.width
-            configuration.height = Self.height
+            configuration.width = portrait ? Self.height : Self.width
+            configuration.height = portrait ? Self.width : Self.height
             configuration.pixelFormat = kCVPixelFormatType_32BGRA
             configuration.minimumFrameInterval = CMTime(seconds: 1 / self.fps, preferredTimescale: 600)
             configuration.queueDepth = 8  // frames being encoded still hold their capture buffers
@@ -153,6 +166,21 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// Follow the captured display's mode: restart capture in the other orientation when it is
+    /// switched between landscape and portrait in System Settings, and use `rotation` for portrait.
+    func refreshOrientation(rotation: PortraitRotation) {
+        lock.lock()
+        self.rotation = rotation
+        let id = capturedDisplay, wasPortrait = portrait
+        lock.unlock()
+        guard let display = id, scStream != nil else { return }
+        let nowPortrait = CGDisplayPixelsHigh(display) > CGDisplayPixelsWide(display)
+        guard nowPortrait != wasPortrait else { return }
+        scStream?.stopCapture(completionHandler: nil)
+        scStream = nil
+        capture(display) { _ in }
+    }
+
     // MARK: - Frames
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -167,8 +195,16 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         inFlight += 1; sequence += 1
         let order = sequence
         lock.unlock()
+        lock.lock(); let turn = portrait ? rotation : nil; lock.unlock()
         var image: CGImage?
-        VTCreateCGImageFromCVPixelBuffer(pixels, options: nil, imageOut: &image)
+        if let turn = turn {
+            // Portrait desktop -> landscape frame for the sideways monitor; rendered now, while the
+            // capture buffer is still ours.
+            let upright = CIImage(cvPixelBuffer: pixels).oriented(turn == .right ? .right : .left)
+            image = ciContext.createCGImage(upright, from: upright.extent)
+        } else {
+            VTCreateCGImageFromCVPixelBuffer(pixels, options: nil, imageOut: &image)
+        }
         encodeQueue.async {
             let started = Date()
             var jpeg: Data?

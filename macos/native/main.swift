@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let mirrorItem = NSMenuItem(title: "Mirror Main Display", action: #selector(chooseMirror), keyEquivalent: "")
     let autoItem = NSMenuItem(title: "Start When Adapter Is Plugged In", action: #selector(toggleAuto), keyEquivalent: "")
     let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    let rotateLeftItem = NSMenuItem(title: "Rotate Left", action: #selector(chooseRotateLeft), keyEquivalent: "")
+    let rotateRightItem = NSMenuItem(title: "Rotate Right", action: #selector(chooseRotateRight), keyEquivalent: "")
 
     let defaults = UserDefaults.standard
     let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/JUA254/display.log")
@@ -51,6 +53,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var autoStart: Bool {
         get { defaults.object(forKey: "autoStart") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "autoStart") }
+    }
+    /// How a portrait desktop (1080x1920, picked in System Settings > Displays) is turned for a
+    /// monitor on its side. If the picture is upside down, choose the other one.
+    var portraitRotation: ScreenCapture.PortraitRotation {
+        get { ScreenCapture.PortraitRotation(rawValue: defaults.string(forKey: "portraitRotation") ?? "") ?? .right }
+        set { defaults.set(newValue.rawValue, forKey: "portraitRotation") }
     }
     var running: [Slot] { slots.values.filter { $0.engine != nil } }
     var ordered: [Slot] { slots.values.sorted { $0.number < $1.number } }
@@ -84,12 +92,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logHandle?.seekToEndOfFile()
         log("JUA254 Display \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") started")
 
-        for item in [startStopItem, extendItem, mirrorItem, autoItem, loginItem] { item.target = self }
+        for item in [startStopItem, extendItem, mirrorItem, autoItem, loginItem, rotateLeftItem, rotateRightItem] { item.target = self }
         menu.addItem(.separator())
         menu.addItem(startStopItem)
         menu.addItem(.separator())
         menu.addItem(extendItem)
         menu.addItem(mirrorItem)
+        let rotationMenu = NSMenu()
+        rotationMenu.addItem(rotateLeftItem)
+        rotationMenu.addItem(rotateRightItem)
+        let rotationItem = NSMenuItem(title: "Portrait Rotation", action: nil, keyEquivalent: "")
+        rotationItem.submenu = rotationMenu
+        rotationItem.toolTip = "For a monitor turned on its side: choose 1080 \u{00D7} 1920 for it in System Settings > Displays"
+        menu.addItem(rotationItem)
         menu.addItem(.separator())
         menu.addItem(autoItem)
         if #available(macOS 13.0, *) { menu.addItem(loginItem) }
@@ -128,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = Date()
         for slot in ordered {
             if let engine = slot.engine {
+                engine.refreshOrientation(rotation: portraitRotation)
                 let sent = engine.sent
                 let rate = Double(sent - slot.lastSent) / max(0.001, now.timeIntervalSince(slot.lastSample))
                 slot.lastSent = sent; slot.lastSample = now
@@ -270,6 +286,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshMenu()
     }
 
+    @objc func chooseRotateLeft() { setRotation(.left) }
+    @objc func chooseRotateRight() { setRotation(.right) }
+
+    func setRotation(_ rotation: ScreenCapture.PortraitRotation) {
+        portraitRotation = rotation
+        for slot in running { slot.engine?.refreshOrientation(rotation: rotation) }
+        refreshMenu()
+    }
+
     @objc func toggleAuto() {
         autoStart.toggle()
         refreshMenu()
@@ -323,6 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         extendItem.state = mirrorMode ? .off : .on
         mirrorItem.state = mirrorMode ? .on : .off
         autoItem.state = autoStart ? .on : .off
+        rotateLeftItem.state = portraitRotation == .left ? .on : .off
+        rotateRightItem.state = portraitRotation == .right ? .on : .off
         if #available(macOS 13.0, *) { loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off }
     }
 
