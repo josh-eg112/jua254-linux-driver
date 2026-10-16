@@ -37,7 +37,7 @@ package() {
   sed 's#%h/.local/share/jua254#/usr/lib/jua254#' packaging/jua254-monitor.service \
     | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/jua254-monitor.service"
   install -Dm644 packaging/99-jua254.rules "$pkgdir/usr/lib/udev/rules.d/70-jua254.rules"
-  for tool in jua254-monitor-status jua254-monitor-start jua254-monitor-stop jua254-monitor-test jua254-monitor-diagnostic; do
+  for tool in jua254-monitor-status jua254-monitor-adapter jua254-monitor-start jua254-monitor-stop jua254-monitor-test jua254-monitor-diagnostic; do
     install -Dm755 "packaging/$tool" "$pkgdir/usr/bin/$tool"
   done
   install -Dm644 packaging/config.toml "$pkgdir/usr/share/doc/$pkgname/config.toml.example"

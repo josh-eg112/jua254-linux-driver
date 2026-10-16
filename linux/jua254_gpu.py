@@ -93,6 +93,7 @@ class GpuCapture:
                 m["encode"].append(event.get("process_ms", 0.0))
                 m["gpu_full_frames" if event.get("full") else "gpu_tile_frames"] += 1
                 m["gpu_tiles"] += event.get("tiles", 0)
+                if "quality" in event: m["jpeg_quality"] = event["quality"]; m["jpeg_reencodes"] = event.get("reencodes", 0)
             elif kind == "frame-failed": m["capture_attempts"] += 1; m["capture_failures"] += 1
             elif kind == "idle": m["capture_idle_waits"] += 1
             elif kind in ("ready", "constraints"): m[f"native_capture_{kind}"] = event
@@ -167,7 +168,7 @@ def run_gpu(args, template, framer, metrics, presentation, telemetry, diagnostic
             write_group_timed, record_successful_usb_update, payload_sha256, log_open_failure=None, note_adapter_ok=None):
     """Main loop for --capture gpu-native. Returns the open device (or None) for cleanup."""
     for name in ("gpu_full_frames", "gpu_tile_frames", "gpu_tiles", "capture_idle_waits", "cursor_shapes",
-                 "cursor_moves", "cursor_cropped", "frames_coalesced", "tiles_sent", "full_sent", "tiles_skipped_need_full"):
+                 "cursor_moves", "cursor_cropped", "frames_coalesced", "tiles_sent", "full_sent", "tiles_skipped_need_full", "too_large"):
         metrics[name] = 0
     capture = GpuCapture(args.monitor or "eDP-1", metrics, args.quality, args.hw_cursor, args.damage_tiles,
                          args.tile, args.max_tiles, args.full_threshold)
@@ -216,7 +217,13 @@ def run_gpu(args, template, framer, metrics, presentation, telemetry, diagnostic
                 base, tiles, newest, dropped = coalesce(pending)
                 metrics["frames_consumed"] += len(pending); metrics["frames_coalesced"] += dropped + max(0, len(pending) - dropped - 1)
                 pending.clear()
-                groups = ([framer.group(base.items[0][8])] if base else []) + [framer.tile_group(t[8], t[2], t[3], t[4], t[5]) for t in tiles]
+                try:
+                    groups = ([framer.group(base.items[0][8])] if base else []) + [framer.tile_group(t[8], t[2], t[3], t[4], t[5]) for t in tiles]
+                except ValueError:
+                    # Too detailed even at the helper's lowest quality: skip it (not a USB failure, so
+                    # no reconnect) and ask for a fresh full frame.
+                    metrics["too_large"] += 1
+                    need_full = True; capture.request_full(); continue
                 started = time.monotonic(); first = final = None
                 for group in groups:
                     _, group_first, group_final = write_group_timed(dev, group)

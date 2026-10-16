@@ -148,8 +148,16 @@ def test_apply_output_mode_resizes_only_on_mismatch():
     runner = lambda *a: calls.append(a) or "ok"
     assert apply_output_mode("HEADLESS-7", "1920x1080@60", lambda: outputs, runner) is False and calls == []
     assert apply_output_mode("HEADLESS-7", "1280x720@60", lambda: outputs, runner) is True
-    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1280x720@60", position = "auto", scale = 1.25 })')]
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1280x720@60", position = "auto", scale = 1.25, transform = 0 })')]
     assert apply_output_mode("HEADLESS-9", "1280x720@60", lambda: outputs, runner) is False
+
+def test_apply_output_mode_turns_output_and_keeps_its_place():
+    calls = []
+    outputs = [{"name": "HEADLESS-7", "width": 1680, "height": 1050, "scale": 1, "x": 1920, "y": 0, "transform": 0}]
+    runner = lambda *a: calls.append(a) or "ok"
+    assert apply_output_mode("HEADLESS-7", "1680x1050@60", lambda: outputs, runner, transform=0) is False and calls == []
+    assert apply_output_mode("HEADLESS-7", "1680x1050@60", lambda: outputs, runner, transform=3) is True
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1680x1050@60", position = "1920x0", scale = 1, transform = 3 })')]
 
 def test_stream_command_explicitly_propagates_phase_experiment():
     class Args:
@@ -388,5 +396,7 @@ def test_signal_handler_state_survives_unplug_monitor_snapshot():
 test_transient_compositor_query_failure_does_not_clear_ownership = test_transient_compositor_failure_does_not_clear_ownership
 
 if __name__ == "__main__":
-    for test in (test_reuse_and_prune, test_create_and_cleanup, test_unowned_and_physical_are_protected, test_selector_string_is_resolved_to_monitor, test_window_rule_places_helper_without_focus_or_workspace_dispatch, test_stream_command_uses_package_template, test_stream_command_fb_rotation_opt_out, test_stream_command_payload_opt_outs, test_stream_command_gpu_path, test_stream_command_mode, test_apply_output_mode_resizes_only_on_mismatch, test_stream_command_explicitly_propagates_phase_experiment, test_external_test_explicitly_enables_diagnostic_bars, test_service_restart_reuses_existing_managed_output, test_atomic_ownership_state_has_no_empty_restart_window, test_service_shutdown_preserves_output_for_replacement_process, test_unplug_replug_then_usb_error_reuses_replacement_output, test_disappeared_owned_output_is_replaced_once, test_ten_streamer_exits_preserve_same_ready_output, test_transient_compositor_query_failure_does_not_clear_ownership, test_child_status_one_and_capture_eof_restart_same_output, test_ten_child_failures_keep_supervisor_and_output, test_successful_bounded_child_exits_without_follow_on_stream, test_bounded_follow_on_requires_explicit_restart_option, test_physical_unplug_waits_and_reconnect_creates_one_replacement, test_signal_handler_state_survives_unplug_monitor_snapshot): test()
+    import tempfile, jua254_monitor
+    jua254_monitor.ADAPTER_SETTINGS = Path(tempfile.mkdtemp()) / "adapters.json"  # never the real settings
+    for test in (test_reuse_and_prune, test_create_and_cleanup, test_unowned_and_physical_are_protected, test_selector_string_is_resolved_to_monitor, test_window_rule_places_helper_without_focus_or_workspace_dispatch, test_stream_command_uses_package_template, test_stream_command_fb_rotation_opt_out, test_stream_command_payload_opt_outs, test_stream_command_gpu_path, test_stream_command_mode, test_apply_output_mode_resizes_only_on_mismatch, test_apply_output_mode_turns_output_and_keeps_its_place, test_stream_command_explicitly_propagates_phase_experiment, test_external_test_explicitly_enables_diagnostic_bars, test_service_restart_reuses_existing_managed_output, test_atomic_ownership_state_has_no_empty_restart_window, test_service_shutdown_preserves_output_for_replacement_process, test_unplug_replug_then_usb_error_reuses_replacement_output, test_disappeared_owned_output_is_replaced_once, test_ten_streamer_exits_preserve_same_ready_output, test_transient_compositor_query_failure_does_not_clear_ownership, test_child_status_one_and_capture_eof_restart_same_output, test_ten_child_failures_keep_supervisor_and_output, test_successful_bounded_child_exits_without_follow_on_stream, test_bounded_follow_on_requires_explicit_restart_option, test_physical_unplug_waits_and_reconnect_creates_one_replacement, test_signal_handler_state_survives_unplug_monitor_snapshot): test()
     print("jua254_monitor lifecycle tests: PASS")

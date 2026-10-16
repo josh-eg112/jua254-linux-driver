@@ -40,8 +40,9 @@ def test_attached_locations_reads_sysfs():
         assert attached_locations(root) == ["2-1", "2-1.3"]
 
 
-def run_two_adapter_scenario(attached_per_step, stop_after_sleeps):
+def run_two_adapter_scenario(attached_per_step, stop_after_sleeps, attached=None):
     """The real supervisor loop with two adapters, using fakes that record every call."""
+    attached_override = attached
     names = {"created": [], "cleaned": [], "preserved": [], "children": []}
     owned = {}  # state file -> output name
     counter = iter(f"HEADLESS-{c}" for c in "ABCDEFGH")
@@ -72,10 +73,10 @@ def run_two_adapter_scenario(attached_per_step, stop_after_sleeps):
         sleeps["n"] += 1
         if sleeps["n"] >= stop_after_sleeps: signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
-    patched = {"attached_locations": attached, "ensure_output": ensure, "assign_workspace": lambda *_: None,
+    patched = {"attached_locations": attached_override or attached, "ensure_output": ensure, "assign_workspace": lambda *_: None,
                "wait_output_ready": lambda name: None, "owned_output_state": lambda name: "ready",
                "cleanup_output": cleanup, "cleanup_owned": lambda **_: None, "monitors": lambda: [],
-               "preserve_output_for_restart": preserve, "apply_output_mode": lambda *_: False}
+               "preserve_output_for_restart": preserve, "apply_output_mode": lambda *a, **k: False}
     original = {k: getattr(monitor, k) for k in patched}
     original_popen, original_sleep = monitor.subprocess.Popen, monitor.time.sleep
     try:
@@ -114,3 +115,34 @@ def test_unplugging_one_adapter_leaves_the_other_running():
     assert second.returncode == 0         # the other stopped only at supervisor shutdown...
     assert names["preserved"] == [("HEADLESS-B", "headless-outputs-2.json")]  # ...keeping its output
     assert len(names["created"]) == 2     # no replacement output was created for the survivor
+
+
+def test_adapter_settings_round_trip(tmp_path):
+    path = tmp_path / "adapters.json"
+    assert monitor.adapter_settings("3-1", path=path) == ("1920x1080@60", "none")
+    assert monitor.save_adapter_settings("3-1", mode="1680x1050@60", path=path) == {"mode": "1680x1050@60"}
+    assert monitor.save_adapter_settings("3-1", rotate="left", path=path) == {"mode": "1680x1050@60", "rotate": "left"}
+    assert monitor.adapter_settings("3-1", path=path) == ("1680x1050@60", "left")
+    assert monitor.adapter_settings("3-2", "1280x720@60", path=path) == ("1280x720@60", "none")   # $JUA254_MODE default
+    monitor.save_adapter_settings("3-1", reset=True, path=path)
+    assert monitor.load_adapter_settings(path) == {}
+    path.write_text("not json")
+    assert monitor.adapter_settings("3-1", path=path) == ("1920x1080@60", "none")
+
+
+def test_changed_settings_restart_only_that_adapters_streamer():
+    """Choosing a resolution for one adapter restarts its streamer in that mode; the other keeps running."""
+    changed = {"done": False}
+    real_sleep_count = {"n": 0}
+    original_attached = monitor.attached_locations
+    def attached():
+        real_sleep_count["n"] += 1
+        if real_sleep_count["n"] == 3 and not changed["done"]:
+            monitor.save_adapter_settings("2-2", mode="1680x1050@60", rotate="left"); changed["done"] = True
+        return ["2-1", "2-2"]
+    names = run_two_adapter_scenario([["2-1", "2-2"]] * 8, 6, attached=attached)
+    first, second, third = names["children"]
+    assert option(first.command, "--usb-location") == "2-1" and first.returncode == 0 and option(first.command, "--mode") is None
+    assert option(second.command, "--usb-location") == "2-2" and option(second.command, "--mode") is None
+    assert option(third.command, "--usb-location") == "2-2" and option(third.command, "--mode") == "1680x1050@60"
+    assert monitor.attached_locations is original_attached
