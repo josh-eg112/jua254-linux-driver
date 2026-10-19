@@ -1,13 +1,12 @@
 // Screen capture for the JUA254 (macOS only): a virtual display at the adapter's output size (private CGVirtualDisplay
 // API, declared in CGVirtualDisplay.h) or an existing display, captured with ScreenCaptureKit and
-// encoded to JPEG by ImageIO on several threads. JPEGs are handed on in capture order; stale ones
+// encoded to JPEG by libjpeg-turbo on several threads. JPEGs are handed on in capture order; stale ones
 // are dropped. Ported from macos/sck_capture.swift.
 
 import CoreGraphics
 import CoreMedia
 import CoreVideo
 import Foundation
-import ImageIO
 import ScreenCaptureKit
 
 final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -37,42 +36,42 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var portrait = false
     private var rotation = PortraitRotation.right
     private let rotator = Rotator()  // used only from the stream's sample handler queue
+    /// One JPEG encoder per frame being encoded (at most `encoders`), reused. Guarded by `lock`.
+    private var idleEncoders: [JPEGEncoder] = []
     private var reencodes = 0
     // Counters for the stats log, guarded by `lock`.
-    private var delivered = 0, encoded = 0, encodeMs = 0.0
-    func counters() -> (delivered: Int, busyDrops: Int, encoded: Int, encodeMs: Double, quality: Double, reencodes: Int) {
+    private var delivered = 0, encoded = 0, encodeMs = 0.0, tooLarge = 0
+    func counters() -> (delivered: Int, busyDrops: Int, encoded: Int, encodeMs: Double, quality: Double, reencodes: Int, tooLarge: Int) {
         lock.lock(); defer { lock.unlock() }
-        return (delivered, busyDrops, encoded, encodeMs, adaptiveQuality, reencodes)
-    }
-
-    static func encode(_ image: CGImage, quality: Double) -> Data? {
-        // Room for any JPEG the adapter takes (and a bit over, to see it's too large) up front, so ImageIO
-        // doesn't grow it by realloc+memmove; the result wraps those bytes instead of copying them.
-        guard let data = NSMutableData(capacity: JUA254.capacity + 64 * 1024),
-              let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return Data(bytesNoCopy: data.mutableBytes, count: data.length, deallocator: .custom { _, _ in _ = data })
+        return (delivered, busyDrops, encoded, encodeMs, adaptiveQuality, reencodes, tooLarge)
     }
 
     /// Encode so the JPEG fits the adapter (JUA254.capacity), lowering quality for detailed frames.
-    private func encodeToFit(_ image: CGImage) -> Data? {
+    private func encodeToFit(_ frame: Frame, with encoder: JPEGEncoder) -> Data? {
         lock.lock(); var q = adaptiveQuality; lock.unlock()
-        var jpeg = Self.encode(image, quality: q)
+        var result = encoder.encode(frame, quality: q)
         var retried = false
-        while let data = jpeg, data.count > JUA254.capacity, q > 0.15 {
+        while case .tooLarge = result, q > 0.15 {
             q = max(0.15, q - 0.15)
             retried = true
-            jpeg = Self.encode(image, quality: q)
+            result = encoder.encode(frame, quality: q)
         }
-        lock.lock()
+        lock.lock(); defer { lock.unlock() }
         if retried {
             adaptiveQuality = q; reencodes += 1
-        } else if let data = jpeg, data.count < JUA254.capacity * 6 / 10, adaptiveQuality < quality {
-            adaptiveQuality = min(quality, adaptiveQuality + 0.01)
         }
-        lock.unlock()
-        return jpeg
+        switch result {
+        case .jpeg(let jpeg):
+            if !retried, jpeg.count < JUA254.capacity * 6 / 10, adaptiveQuality < quality {
+                adaptiveQuality = min(quality, adaptiveQuality + 0.01)
+            }
+            return jpeg
+        case .tooLarge:
+            tooLarge += 1  // too detailed even at the lowest quality; the next frame will do
+            return nil
+        case .failed:
+            return nil
+        }
     }
 
     /// 1 for the first adapter, 2 for the second...: names the virtual display ("JUA254", "JUA254 2")
@@ -211,14 +210,16 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         lock.unlock()
         lock.lock(); let turn = portrait ? rotation : nil; lock.unlock()
         // Portrait desktop -> landscape frame for the sideways monitor (turned now, on the GPU);
-        // a landscape frame is used in place. Both are opaque, which spares the encoder a pass.
-        let image = turn.map { rotator.rotated(pixels, clockwise: $0 == .right) } ?? Frames.image(pixels)
+        // a landscape frame is encoded from the capture buffer in place.
+        let frame = turn.map { rotator.rotated(pixels, clockwise: $0 == .right) } ?? Frames.frame(pixels)
         encodeQueue.async {
             let started = Date()
             var jpeg: Data?
-            if let image = image, image.width == self.width, image.height == self.height {
-                jpeg = self.encodeToFit(image)
+            self.lock.lock(); let encoder = self.idleEncoders.popLast() ?? JPEGEncoder(); self.lock.unlock()
+            if let frame = frame, let encoder = encoder, frame.width == self.width, frame.height == self.height {
+                jpeg = self.encodeToFit(frame, with: encoder)
             }
+            if let encoder = encoder { self.lock.lock(); self.idleEncoders.append(encoder); self.lock.unlock() }
             let ms = Date().timeIntervalSince(started) * 1000
             self.orderQueue.async {
                 self.lock.lock()

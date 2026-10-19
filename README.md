@@ -160,7 +160,9 @@ bash macos/native/test.sh    # protocol tests against golden vectors from the Py
 bash macos/native/build.sh   # builds, signs locally, installs to ~/Applications and opens the app
 ```
 
-`build.sh` downloads libusb 1.0.30 (checked against a pinned SHA-256) and builds it into the app.
+`build.sh` downloads libusb 1.0.30 and libjpeg-turbo 3.1.2, plus nasm 2.16.03 and cmake 3.31.6 to
+build libjpeg-turbo's SIMD code (all checked against pinned SHA-256s), and builds both libraries
+into the app (`deps.sh`; the first build takes about a minute).
 Releases are built by `.github/workflows/macos.yml` on a GitHub macOS runner.
 
 ## Development
@@ -173,8 +175,9 @@ Three tests compare against private USB captures from the research project and a
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE). The macOS app includes libusb (LGPL-2.1-or-later;
-its licence is bundled in the app).
+GPL-3.0-or-later. See [LICENSE](LICENSE). The macOS app includes libusb (LGPL-2.1-or-later) and
+libjpeg-turbo (BSD-3-Clause, IJG and zlib licences); their licences are bundled in the app.
+This software is based in part on the work of the Independent JPEG Group.
 
 j5create is a trademark of its owner. This project is independent and uses the name only to
 identify the hardware it supports.

@@ -58,6 +58,8 @@ jobs:
           codesign -dv "$app" 2>&1 | grep -E "Identifier|Authority|Signature"
           codesign --verify --deep --strict "$app" || echo "note: not trusted on this runner (self-signed), expected"
           test -f "$app/Contents/Resources/AppIcon.icns"
+          test -f "$app/Contents/Resources/libjpeg-turbo-LICENSE.md"
+          nm -arch x86_64 "$app/Contents/MacOS/JUA254Display" | grep -q avx2  # libjpeg-turbo's x86 SIMD is in
 
       - uses: actions/upload-artifact@v4
         with:

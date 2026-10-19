@@ -47,10 +47,10 @@ final class Engine {
         var result = Stats()
         if let c = capture?.counters() {
             result.delivered = c.delivered; result.busyDrops = c.busyDrops; result.encoded = c.encoded; result.encodeMs = c.encodeMs
-            result.quality = c.quality; result.reencodes = c.reencodes
+            result.quality = c.quality; result.reencodes = c.reencodes; result.tooLarge = c.tooLarge
         }
         lock.lock()
-        result.replaced = replaced; result.sent = sent; result.usbMs = usbMs; result.waitMs = waitMs; result.tooLarge = tooLarge
+        result.replaced = replaced; result.sent = sent; result.usbMs = usbMs; result.waitMs = waitMs; result.tooLarge += tooLarge
         lock.unlock()
         return result
     }

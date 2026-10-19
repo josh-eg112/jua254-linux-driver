@@ -7,33 +7,19 @@ cd "$(dirname "$0")"
 build="$(pwd)/build"
 mkdir -p "$build"
 
-# 1. libusb from pinned source, as a universal static library.
-libusb_version=1.0.30
-libusb_sha256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
-src="$build/libusb-$libusb_version"
-if [[ ! -f "$build/lib/libusb-1.0.a" ]]; then
-  echo "Building libusb $libusb_version..."
-  curl -fsSL -o "$build/libusb.tar.bz2" \
-    "https://github.com/libusb/libusb/releases/download/v$libusb_version/libusb-$libusb_version.tar.bz2"
-  echo "$libusb_sha256  $build/libusb.tar.bz2" | shasum -a 256 -c - >/dev/null
-  rm -rf "$src" && tar xjf "$build/libusb.tar.bz2" -C "$build"
-  rm -rf "$build/obj" && mkdir -p "$build/obj" "$build/lib"
-  for file in core descriptor hotplug io strerror sync os/darwin_usb os/events_posix os/threads_posix; do
-    clang -arch x86_64 -arch arm64 -mmacosx-version-min=12.3 -O2 -w \
-      -I "$src/Xcode" -I "$src/libusb" -I "$src/libusb/os" \
-      -c "$src/libusb/$file.c" -o "$build/obj/$(basename "$file").o"
-  done
-  libtool -static -o "$build/lib/libusb-1.0.a" "$build"/obj/*.o
-fi
+# 1. libusb and libjpeg-turbo from pinned source, as universal static libraries.
+source ./deps.sh  # sets $src (libusb's source) and $turbo (libjpeg-turbo's)
 
 # 2. The app binary, once per architecture, then combined.
 echo "Compiling JUA254 Display..."
-sources=(Protocol.swift JPEG.swift Numbering.swift Frames.swift USB.swift Capture.swift Engine.swift main.swift)
+sources=(Protocol.swift JPEG.swift Numbering.swift Frames.swift Encoder.swift USB.swift Capture.swift Engine.swift main.swift)
 for arch in x86_64 arm64; do
+  clang -arch "$arch" -mmacosx-version-min=12.3 -O2 -Wall -I "$build/include/jpeg" -c CTurbo/turbo.c -o "$build/turbo-$arch.o"
   xcrun swiftc -O -swift-version 5 -target "$arch-apple-macos12.3" \
-    -import-objc-header ../CGVirtualDisplay.h -I CLibUSB -Xcc -I"$src/libusb" -L "$build/lib" \
+    -import-objc-header ../CGVirtualDisplay.h -I CLibUSB -Xcc -I"$src/libusb" -I CTurbo -L "$build/lib" \
     -framework IOKit -framework CoreFoundation -framework Security \
-    "${sources[@]}" -o "$build/JUA254Display-$arch"
+    "${sources[@]}" "$build/turbo-$arch.o" -o "$build/JUA254Display-$arch" \
+    2> >(grep -v "no platform load command found" >&2)  # nasm's objects carry no macOS version; harmless
 done
 lipo -create -output "$build/JUA254Display" "$build/JUA254Display-x86_64" "$build/JUA254Display-arm64"
 
@@ -44,6 +30,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$build/JUA254Display" "$app/Contents/MacOS/JUA254Display"
 cp Info.plist "$app/Contents/Info.plist"
 cp "$src/COPYING" "$app/Contents/Resources/libusb-COPYING.txt"
+cp "$turbo/LICENSE.md" "$app/Contents/Resources/libjpeg-turbo-LICENSE.md"  # BSD-3-Clause, IJG and zlib terms
+cp "$turbo/README.ijg" "$app/Contents/Resources/libjpeg-turbo-README.ijg.txt"  # the IJG licence text it refers to
 cp icon/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 # 4. Sign (stable local identity; see ../sign_app.sh) and zip for sharing.
