@@ -1,7 +1,8 @@
 // JUA254 Display (native): a self-contained menu-bar app that drives JUA254 USB display adapters on
 // macOS. No Python or source folder needed: capture, JPEG, framing and USB (libusb) are all in this
 // binary. Each plugged-in adapter gets its own session and virtual display ("JUA254", "JUA254 2"),
-// started when it is plugged in and stopped when it is unplugged.
+// started when it is plugged in and stopped when it is unplugged. Its number and resolution follow
+// the monitor on it (by EDID), so moving a monitor to another adapter keeps its settings.
 // Log: ~/Library/Logs/JUA254/display.log. Built by macos/native/build.sh.
 
 import AppKit
@@ -10,7 +11,15 @@ import ServiceManagement
 /// One plugged-in adapter: its session (when running) and its status, retry and stats state.
 final class Slot {
     let location: AdapterLocation
-    let number: Int
+    /// Set from the port when plugged in, then from the monitor each time a session starts.
+    var number: Int
+    /// What the settings are kept under: the monitor's EDID key, or the port when the monitor has no
+    /// readable EDID or has not been read yet.
+    var key: String
+    /// True once the monitor has been read, so `number` is settled and others must avoid it.
+    var identified = false
+    /// Reading the monitor's EDID before starting a session.
+    var probing = false
     var engine: Engine?
     var status = "Starting…"
     var symbol = "display"
@@ -22,7 +31,7 @@ final class Slot {
     /// The output mode this session was started with.
     var videoMode = VideoMode.standard
 
-    init(location: AdapterLocation, number: Int) { self.location = location; self.number = number }
+    init(location: AdapterLocation, number: Int) { self.location = location; self.number = number; key = location.description }
     var label: String { number == 1 ? "JUA254" : "JUA254 \(number)" }
 }
 
@@ -48,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var waitingForPermission = false
     var quitting = false
     var terminationSignal: DispatchSourceSignal?
+    /// EDID reads in flight; quitting waits for them so no adapter is left mid-transfer.
+    let probes = DispatchGroup()
 
     var mirrorMode: Bool {
         get { defaults.bool(forKey: "mirror") }
@@ -63,15 +74,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { ScreenCapture.PortraitRotation(rawValue: defaults.string(forKey: "portraitRotation") ?? "") ?? .right }
         set { defaults.set(newValue.rawValue, forKey: "portraitRotation") }
     }
-    /// The output mode chosen for each adapter (by display number), for monitors that can't show
-    /// 1920x1080: "1680x1050@60". Missing means 1920x1080@60.
-    func videoMode(for number: Int) -> VideoMode {
-        (defaults.dictionary(forKey: "resolutions")?[String(number)] as? String).flatMap(VideoMode.init) ?? .standard
+    /// The output mode chosen for each monitor (by Slot.key: EDID key, or port), for monitors that
+    /// can't show 1920x1080: "1680x1050@60". Missing means 1920x1080@60.
+    var videoModes: [String: String] {
+        get { defaults.dictionary(forKey: "videoModes") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "videoModes") }
     }
-    func setVideoMode(_ mode: VideoMode, for number: Int) {
-        var chosen = defaults.dictionary(forKey: "resolutions") ?? [:]
-        chosen[String(number)] = mode == .standard ? nil : mode.description
-        defaults.set(chosen, forKey: "resolutions")
+    func videoMode(for key: String) -> VideoMode { videoModes[key].flatMap(VideoMode.init) ?? .standard }
+    func setVideoMode(_ mode: VideoMode, for key: String) { videoModes[key] = mode == .standard ? nil : mode.description }
+    /// Remembered display numbers, by monitor key or port.
+    var displayNumbers: [String: Int] {
+        get { defaults.dictionary(forKey: "displayNumbers") as? [String: Int] ?? [:] }
+        set { defaults.set(newValue, forKey: "displayNumbers") }
+    }
+
+    /// Resolutions used to be kept by display number ("resolutions"), so they followed the adapter's
+    /// port: give them to those ports, from where the first monitor seen in each takes them over.
+    func migrateResolutions() {
+        guard let old = defaults.dictionary(forKey: "resolutions") as? [String: String] else { return }
+        var modes = videoModes
+        for (port, mode) in portModes(fromNumbered: old, numbers: displayNumbers) where modes[port] == nil { modes[port] = mode }
+        videoModes = modes
+        defaults.removeObject(forKey: "resolutions")
+        log("moved resolutions by display number \(old) to ports \(modes)")
     }
     /// The modes each adapter's table offers (by display number), remembered from its last start.
     func offeredModes(for number: Int) -> [VideoMode] {
@@ -83,14 +108,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(known, forKey: "offeredModes")
     }
 
-    var running: [Slot] { slots.values.filter { $0.engine != nil } }
+    /// Adapters with a session, or about to have one (reading their monitor).
+    var running: [Slot] { slots.values.filter { $0.engine != nil || $0.probing } }
     var ordered: [Slot] { slots.values.sorted { $0.number < $1.number } }
 
+    /// A provisional number for a newly plugged-in adapter, from its port (not saved): the monitor
+    /// on it decides when its session starts (settle).
     func number(for location: AdapterLocation) -> Int {
-        var known = defaults.dictionary(forKey: "displayNumbers") as? [String: Int] ?? [:]
-        let number = displayNumber(for: location.description, known: &known, inUse: Set(slots.values.map { $0.number }))
-        defaults.set(known, forKey: "displayNumbers")
-        return number
+        var known = displayNumbers
+        return displayNumber(for: location.description, known: &known, inUse: Set(slots.values.map { $0.number }))
+    }
+
+    /// Give `slot` the settings key and number of the monitor on it (`monitor` nil: none readable,
+    /// so the port's), taking over the port's settings the first time a monitor is seen.
+    func settle(_ slot: Slot, monitor: Monitor?) {
+        let port = slot.location.description
+        let key = monitor?.key ?? port
+        var known = displayNumbers, modes = videoModes
+        adoptPortSettings(monitor: key, port: port, numbers: &known, modes: &modes)
+        let others = slots.values.filter { $0 !== slot && $0.identified }
+        let was = slot.label
+        slot.number = displayNumber(for: key, known: &known, inUse: Set(others.map { $0.number }), alone: slots.count == 1)
+        displayNumbers = known
+        videoModes = modes
+        if key != slot.key || !slot.identified {
+            log("\(was) (port \(port)): " + (monitor.map { "monitor \($0.name ?? "without a name") [\($0.key)]" } ?? "no EDID, settings follow the port")
+                + (slot.label != was ? ", now \(slot.label)" : ""))
+        }
+        slot.key = key
+        slot.identified = true
     }
 
     /// Quitting (menu, logout, or SIGTERM) waits until every adapter's output is disabled and its
@@ -98,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !running.isEmpty else { return .terminateNow }
         quitting = true
-        stopAll { NSApp.reply(toApplicationShouldTerminate: true) }
+        stopAll { self.probes.notify(queue: .main) { NSApp.reply(toApplicationShouldTerminate: true) } }
         return .terminateLater
     }
 
@@ -114,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logHandle = try? FileHandle(forWritingTo: logURL)
         logHandle?.seekToEndOfFile()
         log("JUA254 Display \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") started")
+        migrateResolutions()
 
         for item in [startStopItem, extendItem, mirrorItem, autoItem, loginItem, rotateLeftItem, rotateRightItem] { item.target = self }
         menu.addItem(.separator())
@@ -205,9 +252,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    now.quality, now.reencodes - was.reencodes))
     }
 
+    /// Read the monitor's EDID (on a background queue: it can wait for HDMI), settle the slot's
+    /// number and settings from it, then start the session.
     func start(_ slot: Slot) {
+        guard slot.engine == nil, !slot.probing else { return }
+        slot.probing = true
+        slot.status = "Reading the monitor…"; slot.symbol = "display"
+        probes.enter()
+        let location = slot.location
+        DispatchQueue.global().async {
+            var result: Result<Data?, Error>
+            do {
+                result = .success(try Adapter.readEDID(waitingForHDMI: 10, at: location, waiting: {
+                    DispatchQueue.main.async { slot.status = "Waiting for the HDMI monitor…"; self.refreshMenu() }
+                }))
+            } catch { result = .failure(error) }
+            DispatchQueue.main.async {
+                defer { self.probes.leave() }
+                slot.probing = false
+                guard !self.quitting, !self.stoppedByUser, self.slots[slot.location] === slot else {
+                    if !self.quitting { slot.status = "Connected — stopped" }
+                    self.refreshMenu()
+                    return
+                }
+                switch result {
+                case .success(let edid):
+                    let monitor = edid.flatMap(Monitor.init(edid:))
+                    if monitor == nil { self.log("\(slot.label): no valid EDID (\(edid?.count ?? 0) bytes)") }
+                    self.settle(slot, monitor: monitor)
+                    self.startSession(slot)
+                case .failure(AdapterError.noHDMI):
+                    self.failed(slot, "No HDMI monitor on the adapter — check the cable")
+                case .failure(let error):
+                    if case AdapterError.timeout = error { self.failed(slot, "Adapter not responding — unplug and replug it") }
+                    else { self.failed(slot, "\(error)") }
+                }
+            }
+        }
+        refreshMenu()
+    }
+
+    func startSession(_ slot: Slot) {
         guard slot.engine == nil else { return }
-        slot.videoMode = videoMode(for: slot.number)
+        slot.videoMode = videoMode(for: slot.key)
         let engine = Engine(mode: mirrorMode ? .mirror : .extended, location: slot.location, displayNumber: slot.number,
                             videoMode: slot.videoMode)
         engine.onModes = { [weak self, weak slot] modes in
@@ -232,7 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         slot.engine = engine
         slot.lastSent = 0; slot.lastSample = Date(); slot.lastStats = Engine.Stats(); slot.ticksSinceStats = 0
-        log("--- \(slot.label) starting (\(mirrorMode ? "mirror" : "extended desktop"), \(slot.videoMode), port \(slot.location)) ---")
+        log("--- \(slot.label) starting (\(mirrorMode ? "mirror" : "extended desktop"), \(slot.videoMode), port \(slot.location), \(slot.key)) ---")
         engine.start()
         refreshMenu()
     }
@@ -266,7 +353,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         slot.engine = nil
         log("--- \(slot.label) stopped: \(reason ?? "ok") ---")
         if quitting { return }  // applicationShouldTerminate's stopAll finishes the quit
-        let message = reason ?? "Stopped"
+        failed(slot, reason ?? "Stopped")
+    }
+
+    /// A session (or reading its monitor) ended with `message`: retry later, or ask for a replug.
+    func failed(_ slot: Slot, _ message: String) {
         let attached = slots[slot.location] === slot
         if message.contains("Screen Recording") {
             waitingForPermission = true
@@ -332,14 +423,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func chooseResolution(_ sender: NSMenuItem) {
-        guard let choice = sender.representedObject as? [Any], let number = choice[0] as? Int,
-              let mode = (choice[1] as? String).flatMap(VideoMode.init) else { return }
-        setVideoMode(mode, for: number)
-        log("JUA254\(number == 1 ? "" : " \(number)") resolution set to \(mode)")
+        guard let choice = sender.representedObject as? [Any], let location = choice[0] as? AdapterLocation,
+              let mode = (choice[1] as? String).flatMap(VideoMode.init), let slot = slots[location] else { return }
+        setVideoMode(mode, for: slot.key)
+        log("\(slot.label) resolution set to \(mode) (\(slot.key))")
         // Restart that adapter's session (if it is running) in the new mode.
-        if let slot = slots.values.first(where: { $0.number == number }), slot.engine != nil, slot.videoMode != mode {
+        if slot.engine != nil, slot.videoMode != mode {
             stop(slot) { if self.slots[slot.location] === slot { slot.failuresInRow = 0; self.start(slot) } }
-        } else if let slot = slots.values.first(where: { $0.number == number }) {
+        } else {
             slot.failuresInRow = 0; slot.nextAttempt = .distantPast  // a failed mode can be retried at once
         }
         refreshMenu()
@@ -356,7 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         for slot in ordered {
-            let chosen = videoMode(for: slot.number)
+            let chosen = videoMode(for: slot.key)
             var modes = offeredModes(for: slot.number)
             if !modes.contains(chosen) { modes.append(chosen) }
             if !modes.contains(.standard) { modes.append(.standard) }
@@ -372,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if mode == .standard { title += " (default)" }
                 let item = NSMenuItem(title: title, action: #selector(chooseResolution(_:)), keyEquivalent: "")
                 item.target = self
-                item.representedObject = [slot.number, mode.description] as [Any]
+                item.representedObject = [slot.location, mode.description] as [Any]
                 item.state = mode == chosen ? .on : .off
                 if slots.count > 1 { item.indentationLevel = 1 }
                 resolutionMenu.addItem(item)

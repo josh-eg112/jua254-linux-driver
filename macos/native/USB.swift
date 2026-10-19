@@ -1,6 +1,7 @@
 // The JUA254 over libusb: open/identity/HDMI/mode checks, mode set, VRAM query, frame sends and
 // release. A port of open_device(), query_vram_mb(), write_group_timed() and release_device() in
-// linux/jua254_stream.py, sending only the requests the Linux driver sends. Builds on Linux too.
+// linux/jua254_stream.py, sending only the requests the Linux driver sends, plus one read of the
+// monitor's EDID (0x80, index 0 only) to tell monitors apart. Builds on Linux too.
 
 import CLibUSB
 import Foundation
@@ -84,16 +85,9 @@ final class Adapter {
     /// Open the adapter, verify it is a supported model with an HDMI sink and the mode entry, and
     /// set that mode, as open_device() does. Throws .noHDMI when no monitor is reported.
     static func open(at location: AdapterLocation? = nil, mode: VideoMode = .standard) throws -> Adapter? {
-        var context: OpaquePointer?
-        guard libusb_init(&context) == 0, let context = context else { throw AdapterError.usb("libusb_init failed") }
-        let made: Adapter?
-        do { made = try Adapter(context: context, location: location) } catch { libusb_exit(context); throw error }
-        guard let adapter = made else { libusb_exit(context); return nil }
+        guard let adapter = try claim(at: location) else { return nil }
         do {
-            let project = try adapter.controlIn(request: 0xB0, value: 0, index: 3, length: 16)
-            let name = String(decoding: project.prefix { $0 != 0 }, as: UTF8.self)
-            guard JUA254.models.values.contains(name) else { throw AdapterError.protocolFailure("unsupported adapter model \(name)") }
-            guard try adapter.controlIn(request: 0x87, value: 0, index: 0, length: 1) == Data([1]) else { throw AdapterError.noHDMI }
+            try adapter.checkModelAndHDMI()
             let table = try adapter.modeTable()
             var seen = Set<VideoMode>()
             adapter.modes = table.map { $0.0 }.filter { $0.isSupported && seen.insert($0).inserted }
@@ -123,14 +117,52 @@ final class Adapter {
     /// second after being plugged in). `waiting` is called once if it has to wait.
     static func open(waitingForHDMI seconds: Double, at location: AdapterLocation? = nil, mode: VideoMode = .standard,
                      waiting: () -> Void = {}) throws -> Adapter? {
+        try retryingNoHDMI(seconds, waiting: waiting) { try open(at: location, mode: mode) }
+    }
+
+    /// The monitor's EDID base block, read without touching the adapter's output (which stays as it
+    /// was) and released again. nil when the adapter is not attached. Waits like
+    /// open(waitingForHDMI:) for a sink, and throws .noHDMI if none appears.
+    static func readEDID(waitingForHDMI seconds: Double, at location: AdapterLocation, waiting: () -> Void = {}) throws -> Data? {
+        try retryingNoHDMI(seconds, waiting: waiting) {
+            guard let adapter = try claim(at: location) else { return nil }
+            defer { adapter.close(disableOutput: false) }
+            try adapter.checkModelAndHDMI()
+            // Only ever index 0, one 128-byte block, while 0x87 reports a sink: a nonzero wIndex
+            // hangs the adapter until it is physically replugged (AGENTS.md).
+            return try adapter.controlIn(request: 0x80, value: 0, index: 0, length: 128)
+        }
+    }
+
+    /// Runs `attempt` until it stops throwing .noHDMI or `seconds` pass; `waiting` is called once.
+    private static func retryingNoHDMI<T>(_ seconds: Double, waiting: () -> Void, _ attempt: () throws -> T) throws -> T {
         let deadline = Date().addingTimeInterval(seconds)
         var announced = false
         while true {
-            do { return try open(at: location, mode: mode) } catch AdapterError.noHDMI where Date() < deadline {
+            do { return try attempt() } catch AdapterError.noHDMI where Date() < deadline {
                 if !announced { waiting(); announced = true }
                 Thread.sleep(forTimeInterval: 0.5)
             }
         }
+    }
+
+    /// Opens and claims the adapter at `location` (or the first one) in its own libusb context; nil
+    /// when it is not attached.
+    private static func claim(at location: AdapterLocation?) throws -> Adapter? {
+        var context: OpaquePointer?
+        guard libusb_init(&context) == 0, let context = context else { throw AdapterError.usb("libusb_init failed") }
+        let made: Adapter?
+        do { made = try Adapter(context: context, location: location) } catch { libusb_exit(context); throw error }
+        guard let adapter = made else { libusb_exit(context); return nil }
+        return adapter
+    }
+
+    /// A supported model (0xB0) with an HDMI sink (0x87); throws .noHDMI without one.
+    private func checkModelAndHDMI() throws {
+        let project = try controlIn(request: 0xB0, value: 0, index: 3, length: 16)
+        let name = String(decoding: project.prefix { $0 != 0 }, as: UTF8.self)
+        guard JUA254.models.values.contains(name) else { throw AdapterError.protocolFailure("unsupported adapter model \(name)") }
+        guard try controlIn(request: 0x87, value: 0, index: 0, length: 1) == Data([1]) else { throw AdapterError.noHDMI }
     }
 
     /// Adapter VRAM in MB (vendor request 0x88, read-only).
