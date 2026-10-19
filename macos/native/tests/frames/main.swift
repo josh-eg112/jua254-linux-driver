@@ -1,12 +1,14 @@
 // macOS-only check for Frames.swift: the opaque image keeps every pixel, and the vImage rotation
 // turns frames exactly as the Core Image path it replaced (CIImage.oriented(.right / .left)), so a
-// monitor set up with Rotate Left or Rotate Right stays the right way up.
+// monitor set up with Rotate Left or Rotate Right stays the right way up. The GPU Rotator (macOS 13+)
+// must match too, including when the rotation is switched while it runs.
 
 import CoreGraphics
 import CoreImage
 import CoreVideo
 import Foundation
 import ImageIO
+import VideoToolbox
 
 var failures = 0
 func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL: \(what)") } }
@@ -16,8 +18,8 @@ let colours: [[UInt8]] = [[0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255],
                           [255, 255, 255, 255], [0, 0, 0, 255], [0, 255, 255, 255]]
 let width = 3, height = 2
 var made: CVPixelBuffer?
-CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA,
-                    [kCVPixelBufferCGImageCompatibilityKey: true] as CFDictionary, &made)
+CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA,  // IOSurface-backed, like captured frames
+                    [kCVPixelBufferCGImageCompatibilityKey: true, kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &made)
 let buffer = made!
 CVPixelBufferLockBaseAddress(buffer, [])
 let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
@@ -54,6 +56,15 @@ for (clockwise, orientation) in [(true, CGImagePropertyOrientation.right), (fals
     check(names(turned) == names(viaCoreImage(orientation)),
           "rotation \(clockwise ? "right" : "left"): \(names(turned)) vs Core Image \(names(viaCoreImage(orientation)))")
 }
+let rotator = Rotator()
+for clockwise in [true, false, true] {  // right, then left, then right again in one session
+    let orientation: CGImagePropertyOrientation = clockwise ? .right : .left
+    let turned = rotator.rotated(buffer, clockwise: clockwise)!
+    if #available(macOS 13.0, *) { check(rotator.lastOnGPU, "macOS 13+ turns frames on the GPU") }
+    check(turned.width == height && turned.height == width && turned.alphaInfo == .noneSkipFirst, "Rotator size and opacity")
+    check(names(turned) == names(viaCoreImage(orientation)),
+          "Rotator \(clockwise ? "right" : "left"): \(names(turned)) vs Core Image \(names(viaCoreImage(orientation)))")
+}
 // The JPEG encoder accepts the opaque images.
 let jpeg = NSMutableData()
 let destination = CGImageDestinationCreateWithData(jpeg, "public.jpeg" as CFString, 1, nil)!
@@ -61,4 +72,4 @@ CGImageDestinationAddImage(destination, Frames.rotated(buffer, clockwise: false)
 check(CGImageDestinationFinalize(destination) && jpeg.length > 0, "an opaque rotated frame encodes to JPEG")
 
 if failures > 0 { print("frames: \(failures) FAILED"); exit(1) }
-print("frames: opaque image and both rotations match Core Image")
+print("frames: opaque image and both rotations (vImage and GPU) match Core Image")
