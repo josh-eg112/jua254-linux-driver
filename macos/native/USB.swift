@@ -176,10 +176,14 @@ final class Adapter {
     }
 
     func bulkOut(_ data: Data) throws {
-        var buffer = [UInt8](data)
+        // Sent from the Data's own bytes (libusb only reads an OUT buffer), without a copy per write.
         var transferred: Int32 = 0
-        try check(libusb_bulk_transfer(handle, JUA254.bulkOutEndpoint, &buffer, Int32(buffer.count), &transferred, 5000), "bulk write")
-        if Int(transferred) != buffer.count { throw AdapterError.usb("short USB write") }
+        let status = data.withUnsafeBytes { raw in
+            libusb_bulk_transfer(handle, JUA254.bulkOutEndpoint, UnsafeMutablePointer(mutating: raw.bindMemory(to: UInt8.self).baseAddress),
+                                 Int32(raw.count), &transferred, 5000)
+        }
+        try check(status, "bulk write")
+        if Int(transferred) != data.count { throw AdapterError.usb("short USB write") }
     }
 
     private func check(_ status: Int32, _ what: String) throws {

@@ -16,28 +16,32 @@ let adapterSampling: [UInt8] = [0x22, 0x11, 0x11]
 /// Drop APP1-15/COM segments (EXIF, ICC), require baseline 4:2:0 (restart markers only if
 /// `allowRestart`), renumber components 1/2/3 to the captured encoder's 0/1/2, and check the size.
 func adapterJPEG(_ jpeg: Data, allowRestart: Bool = true, width: Int = 1920, height: Int = 1080) throws -> Data {
-    let bytes = [UInt8](jpeg)
-    guard bytes.count >= 4, bytes[0] == 0xFF, bytes[1] == 0xD8 else { throw JPEGCheck.unsuitable("not a JPEG") }
-    var out: [UInt8] = [0xFF, 0xD8]
+    // One pass over the input's own bytes into an output sized up front (no [UInt8] round trip).
+    var out = Data(capacity: jpeg.count)
     var problems: [String] = []
-    var offset = 2
-    var foundScan = false
-    while offset + 4 <= bytes.count {
-        guard bytes[offset] == 0xFF else { throw JPEGCheck.unsuitable("bad marker at \(offset)") }
-        let marker = bytes[offset + 1]
-        if marker == 0xDA {
-            out.append(contentsOf: bytes[offset...])
-            foundScan = true
-            break
+    try jpeg.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let bytes = raw.bindMemory(to: UInt8.self)
+        guard bytes.count >= 4, bytes[0] == 0xFF, bytes[1] == 0xD8 else { throw JPEGCheck.unsuitable("not a JPEG") }
+        out.append(contentsOf: [0xFF, 0xD8])
+        var offset = 2
+        var foundScan = false
+        while offset + 4 <= bytes.count {
+            guard bytes[offset] == 0xFF else { throw JPEGCheck.unsuitable("bad marker at \(offset)") }
+            let marker = bytes[offset + 1]
+            if marker == 0xDA {
+                out.append(UnsafeBufferPointer(rebasing: bytes[offset...]))
+                foundScan = true
+                break
+            }
+            let length = Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            let end = offset + 2 + length
+            guard length >= 2, end <= bytes.count else { throw JPEGCheck.unsuitable("invalid JPEG segment length") }
+            if marker == 0xDD && !allowRestart { problems.append("uses restart markers (DRI)") }
+            if !((0xE1...0xEF).contains(marker) || marker == 0xFE) { out.append(UnsafeBufferPointer(rebasing: bytes[offset..<end])) }
+            offset = end
         }
-        let length = Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
-        let end = offset + 2 + length
-        guard length >= 2, end <= bytes.count else { throw JPEGCheck.unsuitable("invalid JPEG segment length") }
-        if marker == 0xDD && !allowRestart { problems.append("uses restart markers (DRI)") }
-        if !((0xE1...0xEF).contains(marker) || marker == 0xFE) { out.append(contentsOf: bytes[offset..<end]) }
-        offset = end
+        guard foundScan else { throw JPEGCheck.unsuitable("no image data (SOS)") }
     }
-    guard foundScan else { throw JPEGCheck.unsuitable("no image data (SOS)") }
     try renumberComponents(&out)
     let frame = try baselineFrame(out)
     if frame.sampling != adapterSampling {
@@ -47,11 +51,12 @@ func adapterJPEG(_ jpeg: Data, allowRestart: Bool = true, width: Int = 1920, hei
     if !problems.isEmpty { throw JPEGCheck.unsuitable(problems.joined(separator: "; ")) }
     guard frame.width == width, frame.height == height else { throw JPEGCheck.unsuitable("wrong size") }
     guard out.count <= JUA254.capacity else { throw JPEGCheck.tooLarge(out.count) }
-    return Data(out)
+    return out
 }
 
 /// Conventional JPEG component IDs 1/2/3 become the captured encoder's 0/1/2 (SOF0 and SOS).
-func renumberComponents(_ data: inout [UInt8]) throws {
+/// `data` starts at index 0 (a whole Data, not a slice), as do the offsets below.
+func renumberComponents(_ data: inout Data) throws {
     func mapped(_ id: UInt8) throws -> UInt8 {
         guard (1...3).contains(id) else { throw JPEGCheck.unsuitable("unexpected component id \(id)") }
         return id - 1
@@ -75,7 +80,7 @@ func renumberComponents(_ data: inout [UInt8]) throws {
 }
 
 /// Width, height and sampling factors of a baseline (SOF0) JPEG that also has a scan and ends in EOI.
-func baselineFrame(_ data: [UInt8]) throws -> (width: Int, height: Int, sampling: [UInt8]) {
+func baselineFrame(_ data: Data) throws -> (width: Int, height: Int, sampling: [UInt8]) {
     guard data.count >= 4, data[0] == 0xFF, data[1] == 0xD8, data[data.count - 2] == 0xFF, data[data.count - 1] == 0xD9 else {
         throw JPEGCheck.unsuitable("JPEG must have exact SOI/EOI markers and no trailing bytes")
     }
