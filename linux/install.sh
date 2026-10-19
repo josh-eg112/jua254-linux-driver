@@ -54,6 +54,7 @@ install -Dm644 "$repo/packaging/jua254-monitor.service" "$HOME/.config/systemd/u
 install -Dm755 "$repo/packaging/jua254-stream" "$HOME/.local/bin/jua254-stream"
 install -Dm755 "$repo/packaging/jua254-monitor-test" "$HOME/.local/bin/jua254-monitor-test"
 install -Dm755 "$repo/packaging/jua254-monitor-status" "$HOME/.local/bin/jua254-monitor-status"
+install -Dm755 "$repo/packaging/jua254-monitor-adapter" "$HOME/.local/bin/jua254-monitor-adapter"
 install -Dm755 "$repo/packaging/jua254-monitor-start" "$HOME/.local/bin/jua254-monitor-start"
 install -Dm755 "$repo/packaging/jua254-monitor-stop" "$HOME/.local/bin/jua254-monitor-stop"
 install -Dm755 "$repo/packaging/jua254-monitor-diagnostic" "$HOME/.local/bin/jua254-monitor-diagnostic"

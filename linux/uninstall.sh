@@ -12,7 +12,7 @@ systemctl --user disable --now jua254-monitor.service jua254-stream.service 2>/d
 [[ -f "$root/linux/jua254_monitor.py" ]] && python3 "$root/linux/jua254_monitor.py" cleanup 2>/dev/null || true
 
 rm -f "$HOME/.config/systemd/user/jua254-monitor.service" "$HOME/.config/systemd/user/jua254-stream.service"
-for tool in jua254-stream jua254-monitor-test jua254-monitor-status jua254-monitor-start \
+for tool in jua254-stream jua254-monitor-test jua254-monitor-status jua254-monitor-adapter jua254-monitor-start \
             jua254-monitor-stop jua254-monitor-diagnostic; do
   rm -f "$HOME/.local/bin/$tool"
 done

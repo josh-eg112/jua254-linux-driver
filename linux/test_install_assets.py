@@ -55,6 +55,7 @@ def test_installed_assets_from_unrelated_cwd():
             home / ".local/bin/jua254-stream",
             home / ".local/bin/jua254-monitor-test",
             home / ".local/bin/jua254-monitor-status",
+            home / ".local/bin/jua254-monitor-adapter",
             home / ".local/bin/jua254-monitor-start",
             home / ".local/bin/jua254-monitor-stop",
             home / ".local/bin/jua254-monitor-diagnostic",

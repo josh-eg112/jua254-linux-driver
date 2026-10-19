@@ -1,48 +1,53 @@
-// JUA254 Display (native): a self-contained menu-bar app that drives the JUA254 USB display
-// adapter on macOS. No Python or source folder needed: capture, JPEG, framing and USB (libusb) are
-// all in this binary. It starts when the adapter is plugged in and stops when it is unplugged.
+// JUA254 Display (native): a self-contained menu-bar app that drives JUA254 USB display adapters on
+// macOS. No Python or source folder needed: capture, JPEG, framing and USB (libusb) are all in this
+// binary. Each plugged-in adapter gets its own session and virtual display ("JUA254", "JUA254 2"),
+// started when it is plugged in and stopped when it is unplugged.
 // Log: ~/Library/Logs/JUA254/display.log. Built by macos/native/build.sh.
 
 import AppKit
-import IOKit
 import ServiceManagement
 
-/// True while a JUA254 is attached, from the IORegistry (no device access needed).
-func adapterPresent() -> Bool {
-    let matching = IOServiceMatching("IOUSBHostDevice") as NSMutableDictionary
-    matching["idVendor"] = Int(JUA254.vendorID)
-    matching["idProduct"] = Int(JUA254.productID)
-    var iterator: io_iterator_t = 0
-    guard IOServiceGetMatchingServices(kIOMainPortDefault, matching as CFDictionary, &iterator) == KERN_SUCCESS else { return false }
-    defer { IOObjectRelease(iterator) }
-    let service = IOIteratorNext(iterator)
-    guard service != 0 else { return false }
-    IOObjectRelease(service)
-    return true
+/// One plugged-in adapter: its session (when running) and its status, retry and stats state.
+final class Slot {
+    let location: AdapterLocation
+    let number: Int
+    var engine: Engine?
+    var status = "Starting…"
+    var symbol = "display"
+    var failuresInRow = 0
+    var nextAttempt = Date.distantPast
+    var lastSent = 0, lastSample = Date()
+    var lastStats = Engine.Stats()
+    var ticksSinceStats = 0
+    /// The output mode this session was started with.
+    var videoMode = VideoMode.standard
+
+    init(location: AdapterLocation, number: Int) { self.location = location; self.number = number }
+    var label: String { number == 1 ? "JUA254" : "JUA254 \(number)" }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
-    let statusLine = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
+    var statusLines: [NSMenuItem] = []
     let startStopItem = NSMenuItem(title: "Start", action: #selector(startStop), keyEquivalent: "")
     let extendItem = NSMenuItem(title: "Extended Desktop", action: #selector(chooseExtend), keyEquivalent: "")
     let mirrorItem = NSMenuItem(title: "Mirror Main Display", action: #selector(chooseMirror), keyEquivalent: "")
     let autoItem = NSMenuItem(title: "Start When Adapter Is Plugged In", action: #selector(toggleAuto), keyEquivalent: "")
     let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    let rotateLeftItem = NSMenuItem(title: "Rotate Left", action: #selector(chooseRotateLeft), keyEquivalent: "")
+    let rotateRightItem = NSMenuItem(title: "Rotate Right", action: #selector(chooseRotateRight), keyEquivalent: "")
+    let resolutionMenu = NSMenu()
 
     let defaults = UserDefaults.standard
     let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/JUA254/display.log")
     var logHandle: FileHandle?
-    var engine: Engine?
-    var stoppedByUser = false   // a manual Stop holds until the adapter is unplugged or Start is chosen
+    var slots: [AdapterLocation: Slot] = [:]
+    var notice = "Starting…"    // shown when no adapter is attached
+    var stoppedByUser = false   // a manual Stop holds until every adapter is unplugged or Start is chosen
     var waitingForPermission = false
-    var failuresInRow = 0
-    var nextAttempt = Date.distantPast
-    var lastSent = 0, lastSample = Date()
-    var ticksSinceRateLog = 0
-    var lastStats = Engine.Stats()
     var quitting = false
+    var terminationSignal: DispatchSourceSignal?
 
     var mirrorMode: Bool {
         get { defaults.bool(forKey: "mirror") }
@@ -52,15 +57,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { defaults.object(forKey: "autoStart") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "autoStart") }
     }
+    /// How a portrait desktop (e.g. 1080x1920, picked in System Settings > Displays) is turned for a
+    /// monitor on its side. If the picture is upside down, choose the other one.
+    var portraitRotation: ScreenCapture.PortraitRotation {
+        get { ScreenCapture.PortraitRotation(rawValue: defaults.string(forKey: "portraitRotation") ?? "") ?? .right }
+        set { defaults.set(newValue.rawValue, forKey: "portraitRotation") }
+    }
+    /// The output mode chosen for each adapter (by display number), for monitors that can't show
+    /// 1920x1080: "1680x1050@60". Missing means 1920x1080@60.
+    func videoMode(for number: Int) -> VideoMode {
+        (defaults.dictionary(forKey: "resolutions")?[String(number)] as? String).flatMap(VideoMode.init) ?? .standard
+    }
+    func setVideoMode(_ mode: VideoMode, for number: Int) {
+        var chosen = defaults.dictionary(forKey: "resolutions") ?? [:]
+        chosen[String(number)] = mode == .standard ? nil : mode.description
+        defaults.set(chosen, forKey: "resolutions")
+    }
+    /// The modes each adapter's table offers (by display number), remembered from its last start.
+    func offeredModes(for number: Int) -> [VideoMode] {
+        (defaults.dictionary(forKey: "offeredModes")?[String(number)] as? [String] ?? []).compactMap(VideoMode.init)
+    }
+    func rememberOfferedModes(_ modes: [VideoMode], for number: Int) {
+        var known = defaults.dictionary(forKey: "offeredModes") ?? [:]
+        known[String(number)] = modes.map { $0.description }
+        defaults.set(known, forKey: "offeredModes")
+    }
 
-    var terminationSignal: DispatchSourceSignal?
+    var running: [Slot] { slots.values.filter { $0.engine != nil } }
+    var ordered: [Slot] { slots.values.sorted { $0.number < $1.number } }
 
-    /// Quitting (menu, logout, or SIGTERM) waits until the adapter's output is disabled and the
-    /// interface released: killing the app mid-transfer can hang the adapter until it is replugged.
+    func number(for location: AdapterLocation) -> Int {
+        var known = defaults.dictionary(forKey: "displayNumbers") as? [String: Int] ?? [:]
+        let number = displayNumber(for: location.description, known: &known, inUse: Set(slots.values.map { $0.number }))
+        defaults.set(known, forKey: "displayNumbers")
+        return number
+    }
+
+    /// Quitting (menu, logout, or SIGTERM) waits until every adapter's output is disabled and its
+    /// interface released: killing the app mid-transfer can hang an adapter until it is replugged.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard engine != nil else { return .terminateNow }
+        guard !running.isEmpty else { return .terminateNow }
         quitting = true
-        stopEngine()
+        stopAll { NSApp.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
     }
 
@@ -77,14 +115,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logHandle?.seekToEndOfFile()
         log("JUA254 Display \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") started")
 
-        for item in [startStopItem, extendItem, mirrorItem, autoItem, loginItem] { item.target = self }
-        statusLine.isEnabled = false
-        menu.addItem(statusLine)
+        for item in [startStopItem, extendItem, mirrorItem, autoItem, loginItem, rotateLeftItem, rotateRightItem] { item.target = self }
         menu.addItem(.separator())
         menu.addItem(startStopItem)
         menu.addItem(.separator())
         menu.addItem(extendItem)
         menu.addItem(mirrorItem)
+        let rotationMenu = NSMenu()
+        rotationMenu.addItem(rotateLeftItem)
+        rotationMenu.addItem(rotateRightItem)
+        let rotationItem = NSMenuItem(title: "Portrait Rotation", action: nil, keyEquivalent: "")
+        rotationItem.submenu = rotationMenu
+        rotationItem.toolTip = "For a monitor turned on its side: choose its portrait size (e.g. 1080 \u{00D7} 1920) in System Settings > Displays"
+        menu.addItem(rotationItem)
+        let resolutionItem = NSMenuItem(title: "Resolution", action: nil, keyEquivalent: "")
+        resolutionItem.submenu = resolutionMenu
+        resolutionItem.toolTip = "The adapter's output resolution: choose what its monitor supports"
+        menu.addItem(resolutionItem)
         menu.addItem(.separator())
         menu.addItem(autoItem)
         if #available(macOS 13.0, *) { menu.addItem(loginItem) }
@@ -105,40 +152,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Lifecycle
 
     func tick() {
-        let present = adapterPresent()
-        if !present {
+        let attached = Set(Adapter.attached())
+        for slot in slots.values where !attached.contains(slot.location) {
+            log("\(slot.label) unplugged (port \(slot.location))")
+            slots[slot.location] = nil
+            stop(slot)
+        }
+        for location in attached.sorted() where slots[location] == nil {
+            let slot = Slot(location: location, number: number(for: location))
+            slots[location] = slot
+            log("\(slot.label) plugged in (port \(location))")
+        }
+        if slots.isEmpty {
             stoppedByUser = false
-            failuresInRow = 0
-            nextAttempt = .distantPast
-            if engine != nil { stopEngine() } else if !waitingForPermission { setStatus("Waiting for the adapter", symbol: "display") }
-        } else if engine == nil && !stoppedByUser && !waitingForPermission && autoStart && Date() >= nextAttempt && !quitting {
-            startEngine()
-        } else if let engine = engine {
-            let now = Date(), sent = engine.sent
-            let rate = Double(sent - lastSent) / now.timeIntervalSince(lastSample)
-            lastSent = sent; lastSample = now
-            ticksSinceRateLog += 1
-            if ticksSinceRateLog >= 5 {  // every ~10 s
-                ticksSinceRateLog = 0
-                logStats(engine)
+            notice = "Waiting for the adapter"
+        }
+        let now = Date()
+        for slot in ordered {
+            if let engine = slot.engine {
+                engine.refreshOrientation(rotation: portraitRotation)
+                let sent = engine.sent
+                let rate = Double(sent - slot.lastSent) / max(0.001, now.timeIntervalSince(slot.lastSample))
+                slot.lastSent = sent; slot.lastSample = now
+                slot.ticksSinceStats += 1
+                if slot.ticksSinceStats >= 5 { slot.ticksSinceStats = 0; logStats(slot, engine) }  // every ~10 s
+                if slot.symbol == "display.2" {
+                    slot.status = (mirrorMode ? "Mirroring" : "Extended desktop") + String(format: " — %.1f frames/s", rate)
+                }
+            } else if !stoppedByUser && !waitingForPermission && autoStart && now >= slot.nextAttempt && !quitting {
+                start(slot)
+            } else if stoppedByUser || !autoStart {
+                slot.status = "Connected — stopped"; slot.symbol = "display"
             }
-            if statusLine.title.hasPrefix("Extended") || statusLine.title.hasPrefix("Mirroring") {
-                setStatus((mirrorMode ? "Mirroring" : "Extended desktop") + String(format: " — %.1f frames/s", rate), symbol: "display.2")
-            }
-        } else if stoppedByUser || !autoStart {
-            setStatus("Adapter connected — stopped", symbol: "display")
         }
         refreshMenu()
     }
 
-    /// One line per ~10 s: where frames go and where the time is spent, since the last line.
-    func logStats(_ engine: Engine) {
-        let now = engine.stats(), was = lastStats
-        lastStats = now
+    /// One line per adapter per ~10 s: where frames go and where the time is spent.
+    func logStats(_ slot: Slot, _ engine: Engine) {
+        let now = engine.stats(), was = slot.lastStats
+        slot.lastStats = now
         let seconds = 10.0
         let encoded = now.encoded - was.encoded, sent = now.sent - was.sent
         let avg = { (total: Double, count: Int) in count > 0 ? total / Double(count) : 0 }
-        log(String(format: "10 s: macOS gave %d frames (%.1f/s), %d skipped while encoders busy, %d encoded (avg %.1f ms); "
+        log(slot.label + String(format: " 10 s: macOS gave %d frames (%.1f/s), %d skipped while encoders busy, %d encoded (avg %.1f ms); "
                    + "%d replaced by newer before sending, %d sent (%.1f/s, avg USB %.1f ms, avg pacing wait %.1f ms), %d too large; "
                    + "JPEG quality %.2f, %d re-encoded smaller",
                    now.delivered - was.delivered, Double(now.delivered - was.delivered) / seconds,
@@ -148,95 +205,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    now.quality, now.reencodes - was.reencodes))
     }
 
-    func startEngine() {
-        guard engine == nil else { return }
-        let engine = Engine(mode: mirrorMode ? .mirror : .extended)
-        engine.log = { [weak self] text in self?.log(text) }
-        engine.onStatus = { [weak self] text, active in
+    func start(_ slot: Slot) {
+        guard slot.engine == nil else { return }
+        slot.videoMode = videoMode(for: slot.number)
+        let engine = Engine(mode: mirrorMode ? .mirror : .extended, location: slot.location, displayNumber: slot.number,
+                            videoMode: slot.videoMode)
+        engine.onModes = { [weak self, weak slot] modes in
             DispatchQueue.main.async {
-                self?.setStatus(text, symbol: active ? "display.2" : "display")
-                if active { self?.failuresInRow = 0 }
+                guard let slot = slot else { return }
+                self?.rememberOfferedModes(modes, for: slot.number)
+                self?.refreshMenu()
             }
         }
-        engine.onFinished = { [weak self, weak engine] reason in
-            DispatchQueue.main.async { self?.finished(engine, reason) }
+        engine.log = { [weak self, weak slot] text in self?.log("\(slot?.label ?? "JUA254"): \(text)") }
+        engine.onStatus = { [weak self, weak slot] text, active in
+            DispatchQueue.main.async {
+                guard let slot = slot else { return }
+                slot.status = text
+                slot.symbol = active ? "display.2" : "display"
+                if active { slot.failuresInRow = 0 }
+                self?.refreshMenu()
+            }
         }
-        self.engine = engine
-        lastSent = 0; lastSample = Date(); lastStats = Engine.Stats(); ticksSinceRateLog = 0
-        log("--- starting (\(mirrorMode ? "mirror" : "extended desktop")) ---")
+        engine.onFinished = { [weak self, weak slot, weak engine] reason in
+            DispatchQueue.main.async { if let slot = slot { self?.finished(slot, engine, reason) } }
+        }
+        slot.engine = engine
+        slot.lastSent = 0; slot.lastSample = Date(); slot.lastStats = Engine.Stats(); slot.ticksSinceStats = 0
+        log("--- \(slot.label) starting (\(mirrorMode ? "mirror" : "extended desktop"), \(slot.videoMode), port \(slot.location)) ---")
         engine.start()
         refreshMenu()
     }
 
-    /// Stop on a background queue: closing the adapter can wait for an in-flight USB transfer.
-    func stopEngine(then next: (() -> Void)? = nil) {
-        guard let engine = engine else { next?(); return }
-        self.engine = nil
+    /// Stop one session on a background queue: closing the adapter can wait for an in-flight transfer.
+    func stop(_ slot: Slot, then next: (() -> Void)? = nil) {
+        guard let engine = slot.engine else { next?(); return }
+        slot.engine = nil
         DispatchQueue.global().async {
             engine.stop()
             DispatchQueue.main.async {
-                self.log("--- stopped ---")
-                if self.quitting { NSApp.reply(toApplicationShouldTerminate: true); return }
-                self.setStatus(adapterPresent() ? "Adapter connected — stopped" : "Waiting for the adapter", symbol: "display")
+                self.log("--- \(slot.label) stopped ---")
+                slot.status = "Connected — stopped"; slot.symbol = "display"
                 next?()
                 self.refreshMenu()
             }
         }
     }
 
-    func finished(_ finishedEngine: Engine?, _ reason: String?) {
-        guard let finishedEngine = finishedEngine, finishedEngine === engine else { return }
-        engine = nil
-        log("--- stopped: \(reason ?? "ok") ---")
-        if quitting { return }  // applicationShouldTerminate's stopEngine finishes the quit
+    func stopAll(then next: @escaping () -> Void) {
+        let group = DispatchGroup()
+        for slot in running {
+            group.enter()
+            stop(slot) { group.leave() }
+        }
+        group.notify(queue: .main, execute: next)
+    }
+
+    func finished(_ slot: Slot, _ finishedEngine: Engine?, _ reason: String?) {
+        guard let finishedEngine = finishedEngine, finishedEngine === slot.engine else { return }
+        slot.engine = nil
+        log("--- \(slot.label) stopped: \(reason ?? "ok") ---")
+        if quitting { return }  // applicationShouldTerminate's stopAll finishes the quit
         let message = reason ?? "Stopped"
-        if message.contains("disconnected") {
-            // Unplugged (the next tick shows "Waiting for the adapter") or re-enumerating: retry soon,
-            // backing off if it keeps happening; a stuck adapter needs a replug.
-            backOff()
-            if failuresInRow >= 3 {
-                setStatus("Adapter not responding — unplug and replug it", symbol: "exclamationmark.triangle")
-            } else {
-                setStatus("Reconnecting…", symbol: "display")
-            }
-        } else if message.contains("Screen Recording") {
+        let attached = slots[slot.location] === slot
+        if message.contains("Screen Recording") {
             waitingForPermission = true
-            setStatus("Allow Screen Recording for JUA254 Display, then reopen it", symbol: "exclamationmark.triangle")
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        } else if message.contains("disconnected") {
+            // Unplugged (the next tick removes the slot) or re-enumerating: retry soon, backing off if it
+            // keeps happening; a stuck adapter needs a replug.
+            backOff(slot)
+            slot.status = slot.failuresInRow >= 3 ? "Not responding — unplug and replug it" : "Reconnecting…"
+            slot.symbol = slot.failuresInRow >= 3 ? "exclamationmark.triangle" : "display"
         } else if message.contains("not responding") || message.contains("LIBUSB_ERROR_IO") {
             // A timed-out or failing adapter usually means its firmware hung: only a replug helps.
-            backOff()
-            setStatus(failuresInRow >= 2 ? "Adapter not responding — unplug and replug it" : "Reconnecting…",
-                      symbol: failuresInRow >= 2 ? "exclamationmark.triangle" : "display")
-        } else if message.contains("HDMI") {
-            setStatus(message, symbol: "exclamationmark.triangle")
-            backOff()
-        } else if adapterPresent() {
-            setStatus(message, symbol: "exclamationmark.triangle")
-            backOff()
+            backOff(slot)
+            slot.status = slot.failuresInRow >= 2 ? "Not responding — unplug and replug it" : "Reconnecting…"
+            slot.symbol = slot.failuresInRow >= 2 ? "exclamationmark.triangle" : "display"
+        } else if attached {
+            backOff(slot)
+            slot.status = message; slot.symbol = "exclamationmark.triangle"
         }
         refreshMenu()
     }
 
-    /// Wait 3, 6, 12, 24, then 30 s between automatic restarts.
-    func backOff() {
-        failuresInRow += 1
-        nextAttempt = Date().addingTimeInterval(min(30, 3 * pow(2, Double(failuresInRow - 1))))
+    /// Wait 3, 6, 12, 24, then 30 s between automatic restarts of one adapter.
+    func backOff(_ slot: Slot) {
+        slot.failuresInRow += 1
+        slot.nextAttempt = Date().addingTimeInterval(min(30, 3 * pow(2, Double(slot.failuresInRow - 1))))
     }
 
     // MARK: - Menu
 
     @objc func startStop() {
-        if engine != nil {
+        if !running.isEmpty {
             stoppedByUser = true
-            stopEngine()
-        } else if adapterPresent() {
+            stopAll {}
+        } else if !slots.isEmpty {
             stoppedByUser = false
             waitingForPermission = false
-            failuresInRow = 0
-            startEngine()
+            for slot in ordered { slot.failuresInRow = 0; slot.nextAttempt = .distantPast; start(slot) }
         } else {
-            setStatus("Plug in the adapter first", symbol: "display")
+            notice = "Plug in the adapter first"
         }
         refreshMenu()
     }
@@ -247,8 +317,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setMode(mirror: Bool) {
         guard mirror != mirrorMode else { return }
         mirrorMode = mirror
-        if engine != nil { stopEngine { self.startEngine() } }
+        let restart = running
+        if !restart.isEmpty { stopAll { for slot in restart where self.slots[slot.location] === slot { self.start(slot) } } }
         refreshMenu()
+    }
+
+    @objc func chooseRotateLeft() { setRotation(.left) }
+    @objc func chooseRotateRight() { setRotation(.right) }
+
+    func setRotation(_ rotation: ScreenCapture.PortraitRotation) {
+        portraitRotation = rotation
+        for slot in running { slot.engine?.refreshOrientation(rotation: rotation) }
+        refreshMenu()
+    }
+
+    @objc func chooseResolution(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? [Any], let number = choice[0] as? Int,
+              let mode = (choice[1] as? String).flatMap(VideoMode.init) else { return }
+        setVideoMode(mode, for: number)
+        log("JUA254\(number == 1 ? "" : " \(number)") resolution set to \(mode)")
+        // Restart that adapter's session (if it is running) in the new mode.
+        if let slot = slots.values.first(where: { $0.number == number }), slot.engine != nil, slot.videoMode != mode {
+            stop(slot) { if self.slots[slot.location] === slot { slot.failuresInRow = 0; self.start(slot) } }
+        } else if let slot = slots.values.first(where: { $0.number == number }) {
+            slot.failuresInRow = 0; slot.nextAttempt = .distantPast  // a failed mode can be retried at once
+        }
+        refreshMenu()
+    }
+
+    /// One group per attached adapter: the modes its table offers (once it has been started), with
+    /// the chosen one ticked. Wider modes first.
+    func refreshResolutionMenu() {
+        resolutionMenu.removeAllItems()
+        if slots.isEmpty {
+            let item = NSMenuItem(title: "Plug in the adapter first", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            resolutionMenu.addItem(item)
+            return
+        }
+        for slot in ordered {
+            let chosen = videoMode(for: slot.number)
+            var modes = offeredModes(for: slot.number)
+            if !modes.contains(chosen) { modes.append(chosen) }
+            if !modes.contains(.standard) { modes.append(.standard) }
+            modes.sort { ($0.width * $0.height, $0.refresh) > ($1.width * $1.height, $1.refresh) }
+            if slots.count > 1 {
+                if resolutionMenu.numberOfItems > 0 { resolutionMenu.addItem(.separator()) }
+                let header = NSMenuItem(title: slot.label, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                resolutionMenu.addItem(header)
+            }
+            for mode in modes {
+                var title = "\(mode.width) \u{00D7} \(mode.height), \(mode.refresh) Hz"
+                if mode == .standard { title += " (default)" }
+                let item = NSMenuItem(title: title, action: #selector(chooseResolution(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [slot.number, mode.description] as [Any]
+                item.state = mode == chosen ? .on : .off
+                if slots.count > 1 { item.indentationLevel = 1 }
+                resolutionMenu.addItem(item)
+            }
+        }
     }
 
     @objc func toggleAuto() {
@@ -274,20 +403,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
-    func menuWillOpen(_ menu: NSMenu) { refreshMenu() }
+    func menuWillOpen(_ menu: NSMenu) { refreshMenu(); refreshResolutionMenu() }
 
     func refreshMenu() {
-        startStopItem.title = engine != nil ? "Stop" : "Start"
+        // Status: one line per adapter (prefixed with its name when there are several), or a notice.
+        var lines: [(String, String)] = []
+        if waitingForPermission {
+            lines.append(("Allow Screen Recording for JUA254 Display, then reopen it", "exclamationmark.triangle"))
+        }
+        if slots.isEmpty {
+            lines.append((notice, "display"))
+        } else {
+            for slot in ordered { lines.append((slots.count > 1 ? "\(slot.label): \(slot.status)" : slot.status, slot.symbol)) }
+        }
+        for item in statusLines { menu.removeItem(item) }
+        statusLines = lines.enumerated().map { index, line in
+            let item = NSMenuItem(title: line.0, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.insertItem(item, at: index)
+            return item
+        }
+        let symbols = lines.map { $0.1 }
+        let symbol = symbols.contains("exclamationmark.triangle") ? "exclamationmark.triangle"
+            : symbols.contains("display.2") ? "display.2" : "display"
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "JUA254 Display")
+        statusItem.button?.toolTip = "JUA254 Display — " + lines.map { $0.0 }.joined(separator: "; ")
+
+        startStopItem.title = running.isEmpty ? "Start" : "Stop"
         extendItem.state = mirrorMode ? .off : .on
         mirrorItem.state = mirrorMode ? .on : .off
         autoItem.state = autoStart ? .on : .off
+        rotateLeftItem.state = portraitRotation == .left ? .on : .off
+        rotateRightItem.state = portraitRotation == .right ? .on : .off
         if #available(macOS 13.0, *) { loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off }
-    }
-
-    func setStatus(_ text: String, symbol: String) {
-        statusLine.title = text
-        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "JUA254 Display")
-        statusItem.button?.toolTip = "JUA254 Display — \(text)"
     }
 
     func log(_ text: String) {

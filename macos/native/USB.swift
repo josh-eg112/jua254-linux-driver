@@ -5,14 +5,62 @@
 import CLibUSB
 import Foundation
 
+/// Where an adapter is plugged in: USB bus and port path, e.g. "20-3" or "20-1.2". Stable while it
+/// stays in that port, so two adapters keep their own sessions and virtual displays.
+struct AdapterLocation: Hashable, Comparable, CustomStringConvertible {
+    let bus: UInt8
+    let ports: [UInt8]
+    var description: String { "\(bus)-" + ports.map(String.init).joined(separator: ".") }
+    static func < (a: AdapterLocation, b: AdapterLocation) -> Bool {
+        a.bus != b.bus ? a.bus < b.bus : a.ports.lexicographicallyPrecedes(b.ports)
+    }
+}
+
 final class Adapter {
+    /// Every attached JUA254, by location, without opening any of them.
+    static func attached() -> [AdapterLocation] {
+        var context: OpaquePointer?
+        guard libusb_init(&context) == 0, let context = context else { return [] }
+        defer { libusb_exit(context) }
+        return withAdapters(context) { $0.map { $0.1 } }.sorted()
+    }
+
+    /// Calls `body` with each attached JUA254 device and its location; the list is freed afterwards.
+    private static func withAdapters<T>(_ context: OpaquePointer, _ body: ([(OpaquePointer, AdapterLocation)]) throws -> T) rethrows -> T {
+        var list: UnsafeMutablePointer<OpaquePointer?>?
+        let count = libusb_get_device_list(context, &list)
+        guard count > 0, let devices = list else { return try body([]) }
+        defer { libusb_free_device_list(devices, 1) }
+        var found: [(OpaquePointer, AdapterLocation)] = []
+        for i in 0..<Int(count) {
+            guard let device = devices[i] else { continue }
+            var descriptor = libusb_device_descriptor()
+            guard libusb_get_device_descriptor(device, &descriptor) == 0,
+                  descriptor.idVendor == JUA254.vendorID, JUA254.models[descriptor.idProduct] != nil else { continue }
+            var ports = [UInt8](repeating: 0, count: 8)
+            let depth = libusb_get_port_numbers(device, &ports, Int32(ports.count))
+            found.append((device, AdapterLocation(bus: libusb_get_bus_number(device), ports: Array(ports.prefix(max(0, Int(depth)))))))
+        }
+        return try body(found)
+    }
+
     private var context: OpaquePointer?
     private var handle: OpaquePointer?
     private var claimed = false
 
-    /// Opens and claims the adapter; nil when none is attached.
-    private init?(context: OpaquePointer) throws {
-        guard let opened = libusb_open_device_with_vid_pid(context, JUA254.vendorID, JUA254.productID) else { return nil }
+    /// Opens and claims the adapter at `location` (or the first one); nil when it is not attached.
+    private init?(context: OpaquePointer, location: AdapterLocation?) throws {
+        var opening: OpaquePointer?
+        let status: Int32 = Self.withAdapters(context) { adapters in
+            // The adapter at `location`, or the first supported one when no location is given.
+            guard let device = adapters.first(where: { location == nil || $0.1 == location })?.0 else {
+                return Int32(LIBUSB_ERROR_NOT_FOUND.rawValue)
+            }
+            return libusb_open(device, &opening)
+        }
+        if status == Int32(LIBUSB_ERROR_NOT_FOUND.rawValue) { return nil }
+        if status != 0 { throw Self.error(status, "open") }
+        guard let opened = opening else { return nil }
         // Own the context only once the device is open: deinit runs even when init returns nil.
         self.context = context
         handle = opened
@@ -22,22 +70,46 @@ final class Adapter {
         claimed = true
     }
 
-    /// Open the adapter, verify it is a JUA254H with an HDMI sink and the 1080p60 mode entry, and
+    /// Output modes in the adapter's table that the framer can drive, read when it was opened.
+    private(set) var modes: [VideoMode] = []
+
+    /// Read-only scan of the 0x89 mode table: each entry's mode and its 32-byte blob.
+    private func modeTable() throws -> [(VideoMode, Data)] {
+        try (0..<JUA254.modeTableEntries).map { n in
+            let blob = try controlIn(request: 0x89, value: 0, index: UInt16(n * 32), length: 32)
+            return (VideoMode(modeEntry: blob), blob)
+        }
+    }
+
+    /// Open the adapter, verify it is a supported model with an HDMI sink and the mode entry, and
     /// set that mode, as open_device() does. Throws .noHDMI when no monitor is reported.
-    static func open() throws -> Adapter? {
+    static func open(at location: AdapterLocation? = nil, mode: VideoMode = .standard) throws -> Adapter? {
         var context: OpaquePointer?
         guard libusb_init(&context) == 0, let context = context else { throw AdapterError.usb("libusb_init failed") }
-        guard let adapter = try Adapter(context: context) else { libusb_exit(context); return nil }
+        let made: Adapter?
+        do { made = try Adapter(context: context, location: location) } catch { libusb_exit(context); throw error }
+        guard let adapter = made else { libusb_exit(context); return nil }
         do {
             let project = try adapter.controlIn(request: 0xB0, value: 0, index: 3, length: 16)
             let name = String(decoding: project.prefix { $0 != 0 }, as: UTF8.self)
-            guard name == JUA254.projectCode else { throw AdapterError.protocolFailure("not a JUA254 (project \(name))") }
+            guard JUA254.models.values.contains(name) else { throw AdapterError.protocolFailure("unsupported adapter model \(name)") }
             guard try adapter.controlIn(request: 0x87, value: 0, index: 0, length: 1) == Data([1]) else { throw AdapterError.noHDMI }
-            let mode = try adapter.controlIn(request: 0x89, value: 0, index: 0x0340, length: 32)
-            guard mode == JUA254.mode1080p60 else { throw AdapterError.protocolFailure("unexpected 1080p60 mode entry") }
+            let table = try adapter.modeTable()
+            var seen = Set<VideoMode>()
+            adapter.modes = table.map { $0.0 }.filter { $0.isSupported && seen.insert($0).inserted }
+            let blob: Data
+            if mode == .standard {
+                blob = try adapter.controlIn(request: 0x89, value: 0, index: 0x0340, length: 32)
+                guard blob == JUA254.mode1080p60 else { throw AdapterError.protocolFailure("unexpected 1080p60 mode entry") }
+            } else {
+                guard mode.isSupported, let entry = table.first(where: { $0.0 == mode }) else {
+                    throw AdapterError.protocolFailure("the adapter has no \(mode) mode")
+                }
+                blob = entry.1
+            }
             try adapter.controlOut(request: 0x03, value: 0)
             Thread.sleep(forTimeInterval: 0.25)
-            try adapter.controlOut(request: 0x12, value: 0, data: mode)
+            try adapter.controlOut(request: 0x12, value: 0, data: blob)
             Thread.sleep(forTimeInterval: 0.25)
             try adapter.controlOut(request: 0x03, value: 0, index: 1)  // enable output: wIndex=1, as ctrl_transfer(0x40,0x03,0,1)
             return adapter
@@ -49,11 +121,12 @@ final class Adapter {
 
     /// Open, waiting up to `seconds` while the adapter reports no HDMI sink (it does for about a
     /// second after being plugged in). `waiting` is called once if it has to wait.
-    static func open(waitingForHDMI seconds: Double, waiting: () -> Void = {}) throws -> Adapter? {
+    static func open(waitingForHDMI seconds: Double, at location: AdapterLocation? = nil, mode: VideoMode = .standard,
+                     waiting: () -> Void = {}) throws -> Adapter? {
         let deadline = Date().addingTimeInterval(seconds)
         var announced = false
         while true {
-            do { return try open() } catch AdapterError.noHDMI where Date() < deadline {
+            do { return try open(at: location, mode: mode) } catch AdapterError.noHDMI where Date() < deadline {
                 if !announced { waiting(); announced = true }
                 Thread.sleep(forTimeInterval: 0.5)
             }
@@ -113,7 +186,9 @@ final class Adapter {
         if status != 0 { throw usbError(status, what) }
     }
 
-    private func usbError(_ status: Int32, _ what: String) -> AdapterError {
+    private func usbError(_ status: Int32, _ what: String) -> AdapterError { Self.error(status, what) }
+
+    private static func error(_ status: Int32, _ what: String) -> AdapterError {
         if status == Int32(LIBUSB_ERROR_NO_DEVICE.rawValue) { return .disconnected }  // unplugged or re-enumerating
         if status == Int32(LIBUSB_ERROR_TIMEOUT.rawValue) { return .timeout(what) }
         return .usb("\(what): \(String(cString: libusb_error_name(status)))")

@@ -10,7 +10,10 @@ on **Linux** (Hyprland) and **macOS** (the JUA254 Display menu-bar app, see [mac
 ## What works
 
 - An extended Hyprland monitor at 1920x1080@60, about 58-60 FPS, with the adapter's hardware cursor
-- Other adapter modes, including 1280x720@60, 1600x900@60 and 1920x1080@50 (`JUA254_MODE`)
+- Other adapter modes, including 1680x1050@60, 1280x720@60, 1600x900@60 and 1920x1080@50, chosen
+  per adapter (see [Resolution and rotation](#resolution-and-rotation))
+- Several adapters at once, each its own monitor; the j5create A8640H (`0711:5601`) works too
+- Detailed screens (dense text) stay within the adapter's limit by lowering JPEG quality briefly
 - Unplug/replug and suspend/resume recover on their own
 - A desktop notification when the adapter's firmware hangs (see [Troubleshooting](#troubleshooting))
 
@@ -70,18 +73,27 @@ whenever the adapter is connected; arrange it like any other monitor.
 | Command | What it does |
 | --- | --- |
 | `jua254-monitor-status` | Service, adapter and output status |
+| `jua254-monitor-adapter` | Each adapter's resolution and rotation (see below) |
 | `jua254-monitor-stop` | Stop the service and remove the extra monitor |
 | `jua254-monitor-start` | Start it again |
 | `jua254-monitor-diagnostic` | Write a diagnostic report for bug reports |
 | `journalctl --user -u jua254-monitor` | Service log |
 
-To use another output mode, for example 720p:
+### Resolution and rotation
+
+Each adapter is identified by the USB port it is plugged into. List them, then set a resolution its
+monitor supports (for one that says "input out of range") or rotate it for a monitor turned on its
+side; the running service applies the change within a second:
 
 ```bash
-mkdir -p ~/.config/systemd/user/jua254-monitor.service.d
-printf '[Service]\nEnvironment=JUA254_MODE=1280x720@60\n' > ~/.config/systemd/user/jua254-monitor.service.d/mode.conf
-systemctl --user daemon-reload && systemctl --user restart jua254-monitor
+jua254-monitor-adapter                                   # e.g. "3-1: 1920x1080@60"
+jua254-monitor-adapter 3-1 --mode 1680x1050@60
+jua254-monitor-adapter 3-1 --rotate left                 # upside down? use --rotate right
+jua254-monitor-adapter 3-1 --reset                       # back to 1920x1080@60, not rotated
 ```
+
+Settings are kept in `~/.config/jua254/adapters.json`. Keep each adapter in the same USB port.
+`JUA254_MODE` (in the service environment) still sets the default for adapters without a setting.
 
 ## Uninstall (per-user install)
 
@@ -120,6 +132,12 @@ unplugged; no drivers or extra software to install.
 
 The menu-bar icon shows the status and frame rate, and has Start/Stop, Extended Desktop or Mirror,
 Start When Adapter Is Plugged In, Open at Login, and the log (`~/Library/Logs/JUA254/display.log`).
+
+- **Several adapters** each get their own display ("JUA254", "JUA254 2", ...), remembered by USB port.
+- **Resolution**: if a monitor says "input out of range", choose a mode it supports for that adapter
+  (e.g. 1680 × 1050) in the menu's Resolution submenu.
+- **Portrait**: for a monitor turned on its side, choose its portrait size (e.g. 1080 × 1920) in
+  System Settings > Displays; if the picture is upside down, switch Portrait Rotation in the menu.
 To uninstall, quit the app and move it to the Bin.
 
 ### Notes

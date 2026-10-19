@@ -638,10 +638,26 @@ def connection_groups(records, template, jpeg, diagnostic_bootstrap=False, heade
     live = frame_records(template, jpeg, header) if live is None else live
     return [records, live] if diagnostic_bootstrap else [live]
 
-def open_device(video_mode=None):
+# Supported models: USB product ID -> model code (0xB0). Both are MCT Trigger 6 with the same
+# firmware (bcdDevice 0x1010), endpoints, 58 MB VRAM and mode table (checked 2026-10-16).
+MODELS = {0x5600: b"JUA254H", 0x5601: b"A8640H"}
+
+def usb_location(dev):
+    """A device's USB location as Linux names it in sysfs: "bus-port.port" (e.g. "2-1" or "2-1.3")."""
+    return f"{dev.bus}-" + ".".join(str(n) for n in (dev.port_numbers or ()))
+
+def find_adapter(location=None, backend=None, find=None):
+    """The JUA254 at `location` (or the first one), or None."""
+    import usb.core
+    find = find or usb.core.find
+    supported=lambda d: d.idProduct in MODELS
+    if location is None: return find(idVendor=VID,custom_match=supported,backend=backend)
+    return next((d for d in find(find_all=True,idVendor=VID,custom_match=supported,backend=backend) if usb_location(d)==location), None)
+
+def open_device(video_mode=None, location=None):
     import usb.backend.libusb1, usb.core, usb.util
     backend=usb.backend.libusb1.get_backend(find_library=lambda _:"/usr/lib/libusb-1.0.so")
-    dev=usb.core.find(idVendor=VID,idProduct=PID,backend=backend)
+    dev=find_adapter(location,backend)
     if dev is None: return None
     try:
         dev.set_configuration(); usb.util.claim_interface(dev,INTERFACE)
@@ -651,7 +667,7 @@ def open_device(video_mode=None):
             blob=bytes(dev.ctrl_transfer(0xC0,0x89,0,0x0340,32,timeout=2000)); expected=MODE_1080P60
         else:
             blob=find_mode_blob(dev,video_mode); expected=blob
-        if project!=b"JUA254H" or status!=b"\x01" or blob is None or blob!=expected:
+        if project!=MODELS.get(dev.idProduct) or status!=b"\x01" or blob is None or blob!=expected:
             raise RuntimeError(f"JUA254 identity/HDMI/mode check failed: project={project!r} hdmi={status.hex()} "
                                f"mode={video_mode or '1920x1080@60'} mode_ok={blob is not None and blob==expected}")
         dev.ctrl_transfer(0x40,0x03,0,0,None,timeout=2000); time.sleep(.25)
@@ -806,7 +822,7 @@ def summary(values):
             "p95":percentile(values,95),"p99":percentile(values,99),"max":max(values)}
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--fps",type=float,default=15); ap.add_argument("--quality",type=int,default=80); ap.add_argument("--monitor"); ap.add_argument("--capture",choices=("auto","pipewire","screencopy","wlroots-native","gpu-native","screenshot-fallback"),default="auto"); ap.add_argument("--encoder",choices=("auto","imagemagick","ffmpeg","hardware"),default="auto"); ap.add_argument("--capture-direct-read",action="store_true",help="read native SHM frames directly into a reusable buffer"); ap.add_argument("--capture-zero-copy",action="store_true"); ap.add_argument("--capture-double-buffer",action="store_true"); ap.add_argument("--benchmark",action="store_true"); ap.add_argument("--benchmark-capture",action="store_true"); ap.add_argument("--no-disable-on-exit",action="store_true"); ap.add_argument("--stats",action="store_true"); ap.add_argument("--test-pattern",action="store_true"); ap.add_argument("--diagnostic-bootstrap",action="store_true",help="replay the immutable 48-record test-bars handoff before live capture"); ap.add_argument("--diagnostics-state",type=Path,help="opt-in live diagnostics JSON (off by default)"); ap.add_argument("--telemetry",type=Path,default=default_telemetry_path(),help="atomic live production telemetry path"); ap.add_argument("--no-telemetry",action="store_true",help="disable live telemetry"); ap.add_argument("--image"); ap.add_argument("--seconds",type=float); ap.add_argument("--template",type=Path,default=DEFAULT_TEMPLATE); ap.add_argument("--log",type=Path,default=Path(os.environ.get("XDG_STATE_HOME",Path.home()/".local/state"))/"jua254/stream-latest.json"); ap.add_argument("--config",type=Path,default=Path.home()/".config/jua254/config.json"); ap.add_argument("--presentation-phase-offset-ms",type=float,default=None,help="experimental compositor-presentation phase offset; default disabled"); ap.add_argument("--fb-rotation",action="store_true",help="rotate type-3 frames through the three Windows-captured VRAM buffers and advance FenceID (production supervisor enables this)"); ap.add_argument("--sized-payload",action="store_true",help="size each type-3 transfer to its JPEG like Windows instead of padding to the captured 471008-byte envelope (production supervisor enables this)"); ap.add_argument("--command-ring",action="store_true",help="advance the descriptor JPEG upload address through a VRAM ring like Windows, with the vendor reset flag on start/wrap (production supervisor enables this)"); ap.add_argument("--hw-cursor",action="store_true",help="gpu-native: draw the pointer with the adapter's hardware cursor instead of into frames"); ap.add_argument("--damage-tiles",action="store_true",help="gpu-native: send small damaged regions as type-7 tiles instead of full frames"); ap.add_argument("--tile",default="32x1080",help="gpu-native damage tile size WxH"); ap.add_argument("--max-tiles",type=int,default=24); ap.add_argument("--full-threshold",type=float,default=.4,help="damaged-tile area fraction above which a full frame is sent"); ap.add_argument("--mode",default="1920x1080@60",help="adapter output mode WxH@R from its mode table; non-default modes need --capture gpu-native, --fb-rotation and a matching --monitor size"); args=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument("--fps",type=float,default=15); ap.add_argument("--quality",type=int,default=80); ap.add_argument("--monitor"); ap.add_argument("--capture",choices=("auto","pipewire","screencopy","wlroots-native","gpu-native","screenshot-fallback"),default="auto"); ap.add_argument("--encoder",choices=("auto","imagemagick","ffmpeg","hardware"),default="auto"); ap.add_argument("--capture-direct-read",action="store_true",help="read native SHM frames directly into a reusable buffer"); ap.add_argument("--capture-zero-copy",action="store_true"); ap.add_argument("--capture-double-buffer",action="store_true"); ap.add_argument("--benchmark",action="store_true"); ap.add_argument("--benchmark-capture",action="store_true"); ap.add_argument("--no-disable-on-exit",action="store_true"); ap.add_argument("--stats",action="store_true"); ap.add_argument("--test-pattern",action="store_true"); ap.add_argument("--diagnostic-bootstrap",action="store_true",help="replay the immutable 48-record test-bars handoff before live capture"); ap.add_argument("--diagnostics-state",type=Path,help="opt-in live diagnostics JSON (off by default)"); ap.add_argument("--telemetry",type=Path,default=default_telemetry_path(),help="atomic live production telemetry path"); ap.add_argument("--no-telemetry",action="store_true",help="disable live telemetry"); ap.add_argument("--image"); ap.add_argument("--seconds",type=float); ap.add_argument("--template",type=Path,default=DEFAULT_TEMPLATE); ap.add_argument("--log",type=Path,default=Path(os.environ.get("XDG_STATE_HOME",Path.home()/".local/state"))/"jua254/stream-latest.json"); ap.add_argument("--config",type=Path,default=Path.home()/".config/jua254/config.json"); ap.add_argument("--presentation-phase-offset-ms",type=float,default=None,help="experimental compositor-presentation phase offset; default disabled"); ap.add_argument("--fb-rotation",action="store_true",help="rotate type-3 frames through the three Windows-captured VRAM buffers and advance FenceID (production supervisor enables this)"); ap.add_argument("--sized-payload",action="store_true",help="size each type-3 transfer to its JPEG like Windows instead of padding to the captured 471008-byte envelope (production supervisor enables this)"); ap.add_argument("--command-ring",action="store_true",help="advance the descriptor JPEG upload address through a VRAM ring like Windows, with the vendor reset flag on start/wrap (production supervisor enables this)"); ap.add_argument("--hw-cursor",action="store_true",help="gpu-native: draw the pointer with the adapter's hardware cursor instead of into frames"); ap.add_argument("--damage-tiles",action="store_true",help="gpu-native: send small damaged regions as type-7 tiles instead of full frames"); ap.add_argument("--tile",default="32x1080",help="gpu-native damage tile size WxH"); ap.add_argument("--max-tiles",type=int,default=24); ap.add_argument("--full-threshold",type=float,default=.4,help="damaged-tile area fraction above which a full frame is sent"); ap.add_argument("--usb-location",help="use the adapter at this USB location (bus-port, as in /sys/bus/usb/devices), not the first one found"); ap.add_argument("--mode",default="1920x1080@60",help="adapter output mode WxH@R from its mode table; non-default modes need --capture gpu-native, --fb-rotation and a matching --monitor size"); args=ap.parse_args()
     if not 0<args.fps<=60 or not 1<=args.quality<=100: ap.error("fps must be 0..60 and quality 1..100")
     try: video_mode=VideoMode.parse(args.mode)
     except ValueError as exc: ap.error(f"--mode: {exc}")
@@ -850,7 +866,7 @@ def main():
         from jua254_gpu import run_gpu
         dev=None
         try:
-            dev=run_gpu(args,template,framer,metrics,presentation,telemetry,diagnostics,stop,lambda: open_device(video_mode),query_vram_mb,
+            dev=run_gpu(args,template,framer,metrics,presentation,telemetry,diagnostics,stop,lambda: open_device(video_mode,args.usb_location),query_vram_mb,
                         write_group_timed,record_successful_usb_update,payload_sha256,log_open_failure,note_adapter_ok)
         finally:
             diagnostics.event("stream_stop"); telemetry.close()
@@ -869,7 +885,7 @@ def main():
             metrics["frames_consumed"]+=1
             if dev is None:
                 try:
-                    dev=open_device()
+                    dev=open_device(None,args.usb_location)
                     if dev is None: time.sleep(1); continue
                     note_adapter_ok(metrics)
                     if args.command_ring:

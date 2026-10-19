@@ -7,6 +7,10 @@
  * stdout carries binary records (struct rec + payload); stderr carries one
  * JSON diagnostics object per line. stdin accepts single-byte commands:
  * 'F' forces the next frame to be a full frame.
+ *
+ * Full frames are kept within --max-bytes (the adapter's upload slot): a frame
+ * that encodes larger is re-encoded at lower quality, which then creeps back
+ * up while frames are comfortably small (as the macOS app does).
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -93,6 +97,7 @@ struct app {
     struct cursor cursor; int hw_cursor;
     VADisplay va; VAConfigID vpp_config; VAContextID vpp_ctx;
     struct encoder full, tile; int quality, full_range;
+    int base_quality, max_bytes; uint64_t reencodes;
     int tile_w, tile_h, max_tiles; double full_threshold; int damage_tiles;
     int force_full; uint32_t seq; int frame_timeout_ms; int probe;
     uint64_t tiles_sent, full_sent, frames;
@@ -193,6 +198,14 @@ static void vpp(struct app *a, VASurfaceID src, struct encoder *e, const VARecta
     va_check(vaRenderPicture(a->va, a->vpp_ctx, &buf, 1), "vpp render");
     va_check(vaEndPicture(a->va, a->vpp_ctx), "vpp end");
     vaDestroyBuffer(a->va, buf);
+}
+
+/* Change the JPEG quality: the quantiser tables come from a->quality, so rebuild
+ * the headers of the encoders already set up to match. */
+static void set_quality(struct app *a, int quality) {
+    a->quality = quality;
+    if (a->full.w) a->full.header_len = jpeg_header(a->full.header, a->full.w, a->full.h, quality);
+    if (a->tile.w) a->tile.header_len = jpeg_header(a->tile.header, a->tile.w, a->tile.h, quality);
 }
 
 /* Encode the encoder's NV12 surface; returns a malloc'd complete JPEG. */
@@ -418,6 +431,19 @@ static void request_frame(struct app *a, int slot) {
 
 /* ---------------- Frame processing ---------------- */
 
+/* Encode a full frame within a->max_bytes, lowering the quality for a frame that is too detailed
+ * (the NV12 surface still holds it) and raising it again while frames are comfortably small. */
+static uint8_t *encode_full(struct app *a, size_t *len) {
+    uint8_t *jpeg = encode(a, &a->full, len); int retried = 0;
+    while (a->max_bytes && *len > (size_t)a->max_bytes && a->quality > 15) {
+        free(jpeg); set_quality(a, a->quality - 15 < 15 ? 15 : a->quality - 15); retried = 1;
+        jpeg = encode(a, &a->full, len);
+    }
+    if (retried) a->reencodes++;
+    else if (a->max_bytes && *len < (size_t)a->max_bytes * 6 / 10 && a->quality < a->base_quality) set_quality(a, a->quality + 1);
+    return jpeg;
+}
+
 static void process(struct app *a, struct frame_state *fs) {
     struct slot *s = &a->slots[fs->slot]; uint64_t t0 = now_ns();
     int cols = (a->width + a->tile_w - 1) / a->tile_w, rows = (a->height + a->tile_h - 1) / a->tile_h;
@@ -442,7 +468,7 @@ static void process(struct app *a, struct frame_state *fs) {
     double vpp_ms = 0, enc_ms = 0; size_t bytes = 0;
     if (full) {
         uint64_t t = now_ns(); vpp(a, s->surface, &a->full, NULL); vpp_ms += ms_since(t);
-    t = now_ns(); size_t len; uint8_t *jpeg = encode(a, &a->full, &len); enc_ms += ms_since(t);
+    t = now_ns(); size_t len; uint8_t *jpeg = encode_full(a, &len); enc_ms += ms_since(t);
         emit(a, REC_FULL, 0, 0, a->width, a->height, jpeg, (uint32_t)len, fs->requested_ns, fs->ready_ns);
         bytes = len; free(jpeg); a->full_sent++; a->force_full = 0; marked = 0;
     } else {
@@ -461,10 +487,10 @@ static void process(struct app *a, struct frame_state *fs) {
     }
     emit(a, REC_FRAME_END, full ? 0 : marked, full, 0, 0, NULL, 0, fs->requested_ns, fs->ready_ns);
     fprintf(stderr, "{\"event\":\"frame\",\"seq\":%u,\"full\":%s,\"tiles\":%d,\"damage_rects\":%d,\"damage_area\":%ld,"
-            "\"requested_ns\":%llu,\"presentation_ns\":%llu,\"ready_wait_ms\":%.3f,\"vpp_ms\":%.3f,\"encode_ms\":%.3f,\"process_ms\":%.3f,\"bytes\":%zu}\n",
+            "\"requested_ns\":%llu,\"presentation_ns\":%llu,\"ready_wait_ms\":%.3f,\"vpp_ms\":%.3f,\"encode_ms\":%.3f,\"process_ms\":%.3f,\"bytes\":%zu,\"quality\":%d,\"reencodes\":%llu}\n",
             a->seq, full ? "true" : "false", marked, fs->damage_count, damage_area,
             (unsigned long long)fs->requested_ns, (unsigned long long)fs->presentation_ns,
-            (fs->ready_ns - fs->requested_ns) / 1e6, vpp_ms, enc_ms, ms_since(t0), bytes);
+            (fs->ready_ns - fs->requested_ns) / 1e6, vpp_ms, enc_ms, ms_since(t0), bytes, a->quality, (unsigned long long)a->reencodes);
 }
 
 static void read_commands(struct app *a) {
@@ -506,24 +532,25 @@ static int selftest(struct app *a, const char *path, int w, int h, int tx, int t
     for (int y = 0; y < h; y++) memcpy((uint8_t *)map + img.offsets[0] + (size_t)y * img.pitches[0], pixels + (size_t)y * w * 4, (size_t)w * 4);
     vaUnmapBuffer(a->va, img.buf); vaDestroyImage(a->va, img.image_id);
     size_t len; uint8_t *jpeg;
-    vpp(a, src, &a->full, NULL); jpeg = encode(a, &a->full, &len); emit(a, REC_FULL, 0, 0, w, h, jpeg, (uint32_t)len, 0, 0); free(jpeg);
+    vpp(a, src, &a->full, NULL); jpeg = encode_full(a, &len); emit(a, REC_FULL, 0, 0, w, h, jpeg, (uint32_t)len, 0, 0); free(jpeg);
     VARectangle r = { (int16_t)tx, (int16_t)ty, (uint16_t)a->tile_w, (uint16_t)a->tile_h };
     vpp(a, src, &a->tile, &r); jpeg = encode(a, &a->tile, &len); emit(a, REC_TILE, tx, ty, a->tile_w, a->tile_h, jpeg, (uint32_t)len, 0, 0); free(jpeg);
     return 0;
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: jua254-gpu-capture OUTPUT [--quality N] [--hw-cursor] [--damage-tiles] [--tile WxH] [--max-tiles N]\n"
+    fprintf(stderr, "usage: jua254-gpu-capture OUTPUT [--quality N] [--max-bytes N] [--hw-cursor] [--damage-tiles] [--tile WxH] [--max-tiles N]\n"
                     "       [--full-threshold F] [--limited-range] [--frame-timeout-ms N] [--render-node PATH] [--probe]\n");
     exit(2);
 }
 
 int main(int argc, char **argv) {
     static struct app a; const char *wanted = NULL, *render_node = NULL, *selftest_path = NULL; int selftest_x = 0, selftest_y = 0;
-    a.quality = 80; a.full_range = 1; a.tile_w = 32; a.tile_h = 1080; a.max_tiles = 24; a.full_threshold = 0.4; a.frame_timeout_ms = 500; a.force_full = 1;
+    a.quality = 80; a.max_bytes = 469936; a.full_range = 1; a.tile_w = 32; a.tile_h = 1080; a.max_tiles = 24; a.full_threshold = 0.4; a.frame_timeout_ms = 500; a.force_full = 1;
     for (int i = 1; i < argc; i++) {
         const char *o = argv[i];
         if (!strcmp(o, "--quality") && i + 1 < argc) a.quality = atoi(argv[++i]);
+        else if (!strcmp(o, "--max-bytes") && i + 1 < argc) a.max_bytes = atoi(argv[++i]);
         else if (!strcmp(o, "--hw-cursor")) a.hw_cursor = 1;
         else if (!strcmp(o, "--damage-tiles")) a.damage_tiles = 1;
         else if (!strcmp(o, "--tile") && i + 1 < argc) { if (sscanf(argv[++i], "%dx%d", &a.tile_w, &a.tile_h) != 2) usage(); }
@@ -548,7 +575,8 @@ int main(int argc, char **argv) {
         encoder_init(&a, &a.full, a.width, a.height); encoder_init(&a, &a.tile, a.tile_w, a.tile_h);
         return selftest(&a, selftest_path, a.width, a.height, selftest_x, selftest_y);
     }
-    if (!wanted || a.quality < 1 || a.quality > 100 || a.tile_w < 16 || a.tile_h < 16 || a.tile_w % 16 || (a.tile_h % 16 && a.tile_h != 1080)) usage();
+    a.base_quality = a.quality;
+    if (!wanted || a.max_bytes < 0 || a.quality < 1 || a.quality > 100 || a.tile_w < 16 || a.tile_h < 16 || a.tile_w % 16 || (a.tile_h % 16 && a.tile_h != 1080)) usage();
     if (a.frame_timeout_ms < 50) a.frame_timeout_ms = 50;
     fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
 

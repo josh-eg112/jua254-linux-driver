@@ -4,6 +4,7 @@ import contextlib, io, json, os, sys, types, unittest
 import jua254_stream as js
 
 class FakeDev:
+    idProduct = 0x5600  # a JUA254, as pyusb reports it
     def __init__(self, hdmi=b"\x01"):
         self.hdmi = hdmi; self.claimed = False; self.disposed = False
     def set_configuration(self): pass

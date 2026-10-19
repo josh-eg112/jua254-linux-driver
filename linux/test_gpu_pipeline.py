@@ -120,6 +120,61 @@ def test_hardware_cursor_transfers():
     c.reset(); c.handle((CURSOR_POS, 0, 10, 10, 0, 0, 0, 0, b""))  # after reconnect
     assert [t[1] for t in c.transfers()] == [REQ_SHAPE] * 5 + [REQ_POS, REQ_STATE]  # 8-byte header + 16 KiB in 4 KiB chunks
 
+def test_oversized_frame_is_skipped_without_reconnecting():
+    """A frame too detailed for the adapter's slot is dropped and a full frame requested; the USB
+    connection stays open (it used to count as a USB failure and reopen the adapter)."""
+    import threading
+    import jua254_gpu
+    big = b"\xff\xd8" + bytes(600_000) + b"\xff\xd9"
+    stop = threading.Event(); calls = {"open": 0, "full_requests": 0, "sent": []}
+
+    class FakeCapture:
+        def __init__(self, *a, **k): self.n = 0
+        def fileno(self): return 0
+        def read(self):
+            self.n += 1
+            if self.n == 1:   # the first frame is too large
+                data = rec(FULL, seq=1, w=1920, h=1080, payload=big) + rec(FRAME_END, seq=1)
+                return FrameAssembler().feed(parse_records(bytearray(data)))[0], []
+            if self.n <= 3: return [frame(True, seq=self.n)], []
+            stop.set(); return [], []
+        def request_full(self): calls["full_requests"] += 1
+        def close(self): pass
+
+    class FakeFramer:
+        def group(self, jpeg):
+            if len(jpeg) > 469_936: raise ValueError("frame exceeds the captured envelope")
+            return [jpeg]
+
+    class Presentation:
+        def begin_connection(self): pass
+        def record(self, *a, **k): pass
+    class Telemetry:
+        def maybe_write(self, *a): pass
+    class Diagnostics:
+        def event(self, *a, **k): pass
+        def counter(self, *a, **k): pass
+
+    def open_device():
+        calls["open"] += 1; return object()
+    def write_group_timed(dev, group):
+        calls["sent"].append(len(group[0])); return None, 1.0, 1.0
+    class Args:
+        monitor = "HEADLESS-2"; quality = 80; hw_cursor = False; damage_tiles = False; tile = "32x1080"
+        max_tiles = 24; full_threshold = .4; fps = 1000; seconds = None; command_ring = False
+    metrics = Metrics(usb=[], end_to_end=[], frame_age_after_usb=[], frame_interval=[])
+    original = jua254_gpu.GpuCapture, jua254_gpu.select.select
+    jua254_gpu.GpuCapture = FakeCapture; jua254_gpu.select.select = lambda r, w, x, t: (r, [], [])
+    try:
+        jua254_gpu.run_gpu(Args(), None, FakeFramer(), metrics, Presentation(), Telemetry(), Diagnostics(), stop,
+                           open_device, None, write_group_timed, lambda *a: None, lambda payload: "")
+    finally:
+        jua254_gpu.GpuCapture, jua254_gpu.select.select = original
+    assert metrics["too_large"] == 1 and calls["full_requests"] >= 2   # one at open, one for the skipped frame
+    assert calls["open"] == 1 and metrics["usb_failures"] == 0
+    assert calls["sent"] and all(n == len(JPEG) for n in calls["sent"])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"): fn(); print("ok", name)

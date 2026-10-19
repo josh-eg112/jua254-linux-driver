@@ -28,7 +28,7 @@ fi
 
 # 2. The app binary, once per architecture, then combined.
 echo "Compiling JUA254 Display..."
-sources=(Protocol.swift JPEG.swift USB.swift Capture.swift Engine.swift main.swift)
+sources=(Protocol.swift JPEG.swift Numbering.swift Frames.swift USB.swift Capture.swift Engine.swift main.swift)
 for arch in x86_64 arm64; do
   xcrun swiftc -O -swift-version 5 -target "$arch-apple-macos12.3" \
     -import-objc-header ../CGVirtualDisplay.h -I CLibUSB -Xcc -I"$src/libusb" -L "$build/lib" \
