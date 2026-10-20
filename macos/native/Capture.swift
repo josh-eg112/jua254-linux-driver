@@ -36,6 +36,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var capturedDisplay: CGDirectDisplayID?
     private var portrait = false
     private var rotation = PortraitRotation.right
+    private let rotator = Rotator()  // used only from the stream's sample handler queue
     private var reencodes = 0
     // Counters for the stats log, guarded by `lock`.
     private var delivered = 0, encoded = 0, encodeMs = 0.0
@@ -206,9 +207,9 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let order = sequence
         lock.unlock()
         lock.lock(); let turn = portrait ? rotation : nil; lock.unlock()
-        // Portrait desktop -> landscape frame for the sideways monitor (turned now, into a copy);
+        // Portrait desktop -> landscape frame for the sideways monitor (turned now, on the GPU);
         // a landscape frame is used in place. Both are opaque, which spares the encoder a pass.
-        let image = turn.map { Frames.rotated(pixels, clockwise: $0 == .right) } ?? Frames.image(pixels)
+        let image = turn.map { rotator.rotated(pixels, clockwise: $0 == .right) } ?? Frames.image(pixels)
         encodeQueue.async {
             let started = Date()
             var jpeg: Data?
