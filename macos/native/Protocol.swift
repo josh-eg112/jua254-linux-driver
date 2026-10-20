@@ -113,9 +113,11 @@ func framedGroup(jpeg: Data, header: Data, total: Int, address: Int, reset: Bool
     var head = header
     head.setU32(UInt32(total - 48), at: 4)
     if reset { head[head.startIndex + 47] |= JUA254.resetFlag }
-    var body = head
+    // Built once at its final size; the payload chunks below share its bytes rather than copying them.
+    var body = Data(capacity: total)
+    body.append(head)
     body.append(jpeg)
-    body.append(Data(count: total - 48 - jpeg.count))
+    body.count = total  // zero padding
     var out: [Transfer] = []
     var offset = 0
     while offset < total {
@@ -124,7 +126,7 @@ func framedGroup(jpeg: Data, header: Data, total: Int, address: Int, reset: Bool
         for (i, word) in [0, total, address, size, offset, offset + size < total ? 1 : 0, 0, 0].enumerated() {
             descriptor.setU32(UInt32(truncatingIfNeeded: word), at: i * 4)
         }
-        for data in [descriptor, body.subdata(in: offset..<offset + size)] {
+        for data in [descriptor, body[offset..<offset + size]] {
             let n = out.count
             guard n < Template.recordTimes.count else { throw AdapterError.protocolFailure("more URBs than the template") }
             out.append(Transfer(delay: n == 0 ? 0 : Template.recordTimes[n] - Template.recordTimes[n - 1], data: data))

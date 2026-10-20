@@ -46,10 +46,13 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     static func encode(_ image: CGImage, quality: Double) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
+        // Room for any JPEG the adapter takes (and a bit over, to see it's too large) up front, so ImageIO
+        // doesn't grow it by realloc+memmove; the result wraps those bytes instead of copying them.
+        guard let data = NSMutableData(capacity: JUA254.capacity + 64 * 1024),
+              let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        return CGImageDestinationFinalize(destination) ? data as Data : nil
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return Data(bytesNoCopy: data.mutableBytes, count: data.length, deallocator: .custom { _, _ in _ = data })
     }
 
     /// Encode so the JPEG fits the adapter (JUA254.capacity), lowering quality for detailed frames.
