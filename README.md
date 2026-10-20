@@ -102,8 +102,10 @@ menu-bar app: status for each display (with the workspace shown on it, to tell t
 resolution and portrait rotation per display, start at login, and the log. Left click opens it, right
 click starts or stops the driver.
 
+The Arch package installs it to `/usr/share/jua254/omarchy/jua254.display`; from a checkout it is in `packaging/omarchy`.
+
 ```bash
-cp -r packaging/omarchy/jua254.display ~/.config/omarchy/plugins/
+cp -r /usr/share/jua254/omarchy/jua254.display ~/.config/omarchy/plugins/
 omarchy-shell shell rescanPlugins
 omarchy plugin enable jua254.display --section right
 ```

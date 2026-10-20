@@ -1,7 +1,7 @@
 # Maintainer: josh-eg112 <180571163+josh-eg112@users.noreply.github.com>
 pkgname=jua254-linux-driver
-pkgver=0.3.0alpha
-_tag=v0.3.0-alpha
+pkgver=0.4.0alpha
+_tag=v0.4.0-alpha
 pkgrel=1
 pkgdesc="Unofficial userspace driver for the j5create JUA254 USB-to-HDMI adapter (Hyprland extended monitor)"
 arch=('x86_64')
@@ -15,7 +15,7 @@ optdepends=('intel-media-driver: VA-API JPEG encoding for the 60 FPS GPU path'
 options=('!debug')
 install=jua254-linux-driver.install
 source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
-sha256sums=('d25fee6602b7cdb2d9f183926bbec53d707c0496ddffc812ed151b542c511e04')
+sha256sums=('6a002cd940978fa47cbd2d4f3667d7b0a679420d4bdb4de89594d53e1b57540a')
 
 build() {
   make -C "$pkgname-${_tag#v}/linux/native"
@@ -40,6 +40,7 @@ package() {
   for tool in jua254-monitor-status jua254-monitor-adapter jua254-monitor-start jua254-monitor-stop jua254-monitor-test jua254-monitor-diagnostic; do
     install -Dm755 "packaging/$tool" "$pkgdir/usr/bin/$tool"
   done
+  install -Dm644 -t "$pkgdir/usr/share/jua254/omarchy/jua254.display" packaging/omarchy/jua254.display/*
   install -Dm644 packaging/config.toml "$pkgdir/usr/share/doc/$pkgname/config.toml.example"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
