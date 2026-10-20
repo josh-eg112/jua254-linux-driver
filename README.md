@@ -133,8 +133,10 @@ unplugged; no drivers or extra software to install.
 The menu-bar icon shows the status and frame rate, and has Start/Stop, Extended Desktop or Mirror,
 Start When Adapter Is Plugged In, Open at Login, and the log (`~/Library/Logs/JUA254/display.log`).
 
-- **Several adapters** each get their own display ("JUA254", "JUA254 2", ...), remembered by USB port.
-- **Resolution**: if a monitor says "input out of range", choose a mode it supports for that adapter
+- **Several adapters** each get their own display ("JUA254", "JUA254 2", ...). Its name, arrangement
+  and resolution follow the monitor (read from its EDID), so moving a monitor to another adapter
+  keeps them; a monitor without a readable EDID is remembered by the adapter's USB port.
+- **Resolution**: if a monitor says "input out of range", choose a mode it supports for it
   (e.g. 1680 × 1050) in the menu's Resolution submenu.
 - **Portrait**: for a monitor turned on its side, choose its portrait size (e.g. 1080 × 1920) in
   System Settings > Displays; if the picture is upside down, switch Portrait Rotation in the menu.
