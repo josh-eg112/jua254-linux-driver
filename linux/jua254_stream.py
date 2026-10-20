@@ -197,11 +197,22 @@ class Latest:
     def take(self):
         with self.lock: value=self.value; self.value=None; return value
 
+def vaapi_render_node():
+    """The render node for VA-API JPEG encoding: $JUA254_VAAPI_DEVICE, else the first one not on the NVIDIA driver
+    (its VA-API has no JPEG encoder, and on hybrid laptops it is often renderD128), else renderD128."""
+    if os.environ.get("JUA254_VAAPI_DEVICE"): return os.environ["JUA254_VAAPI_DEVICE"]
+    nodes=sorted(Path("/sys/class/drm").glob("renderD*"),key=lambda p:int(p.name[7:]) if p.name[7:].isdigit() else 0)
+    for node in nodes:
+        try: driver=Path(os.readlink(node/"device/driver")).name
+        except OSError: continue
+        if driver!="nvidia": return f"/dev/dri/{node.name}"
+    return "/dev/dri/renderD128"
+
 class PersistentFFmpegEncoder:
     def __init__(self, backend, quality, pixel_format="rgb24", no_scale=False, async_depth=1):
         common=["ffmpeg","-hide_banner","-loglevel","error","-f","rawvideo","-pixel_format",pixel_format,"-video_size","1920x1080","-framerate","60","-i","pipe:0"]
         if backend=="hardware":
-            common[1:1]=["-vaapi_device","/dev/dri/renderD128"]
+            common[1:1]=["-vaapi_device",vaapi_render_node()]
             # JFIF JPEG is full-range YCbCr, but swscale defaults to limited range (black 16, white 235).
             # Convert to full range, then keep the limited tag: mjpeg_vaapi rejects full-range frames (EINVAL).
             full="out_range=full,format=nv12,setparams=range=tv,hwupload"
@@ -412,7 +423,7 @@ def capture_loop(args, latest, stop, metrics, diagnostics):
     if capture: capture.close()
 
 def capabilities():
-    result={"pipewire":False,"pipewire_portal":False,"screencopy":False,"ffmpeg":True,"hardware":False,"hardware_device":"/dev/dri/renderD128"}
+    result={"pipewire":False,"pipewire_portal":False,"screencopy":False,"ffmpeg":True,"hardware":False,"hardware_device":vaapi_render_node()}
     try:
         data=json.loads(subprocess.run(["pw-dump"],capture_output=True,text=True,check=True).stdout)
         result["pipewire_nodes"]=[x.get("id") for x in data if x.get("type","").endswith(":Node") and x.get("info",{}).get("props",{}).get("media.class")=="Video/Source" and not str(x.get("info",{}).get("props",{}).get("node.name","")).startswith("v4l2_")]
