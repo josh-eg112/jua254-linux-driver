@@ -480,7 +480,53 @@ def run_lifecycle(args, external_test=False):
         cleanup()
         for sig, handler in old_handlers.items(): signal.signal(sig, handler)
 
+# Resolutions offered in the bar menu; the adapter's own mode table still decides, as with --mode.
+MENU_MODES = ("1920x1080@60", "1680x1050@60", "1600x900@60", "1440x900@60", "1366x768@60", "1280x1024@60", "1280x720@60")
+
+def streamer_telemetry(runtime=None, proc=Path("/proc")):
+    """{usb location: (telemetry, cmdline args)} for each live streamer, from its telemetry file and /proc."""
+    runtime = Path(runtime or os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    found = {}
+    for path in runtime.glob("jua254-telemetry*.json"):
+        try:
+            data = json.loads(path.read_text())
+            argv = (proc / str(int(data["pid"])) / "cmdline").read_bytes().decode().split("\0")
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        opts = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
+        if "--usb-location" in opts: found[opts["--usb-location"]] = (data, opts)
+    return found
+
+def stream_state(telemetry, now=None):
+    """(state, fps) of one streamer from its telemetry: streaming, idle (nothing changed on screen), or error."""
+    now = time.monotonic() if now is None else now
+    failures = telemetry.get("failures") or {}
+    if any(failures.get(k) for k in ("usb", "adapter_open", "encoder", "capture")): state = "error"
+    elif now - float(telemetry.get("snapshot_monotonic", 0)) > 5: state = "idle"
+    else: state = "streaming"
+    intervals = [x for x in telemetry.get("recent_usb_start_intervals_ms") or [] if x > 0]
+    fps = round(1000 / (sum(intervals) / len(intervals))) if intervals and state == "streaming" else 0
+    return state, fps
+
+def menu_status():
+    """Everything the Omarchy bar menu shows, as one JSON object."""
+    def systemctl(verb):
+        return subprocess.run(["systemctl", "--user", verb, "jua254-monitor.service"], capture_output=True, text=True).stdout.strip()
+    try: outputs = {m.get("name"): m for m in monitors()}
+    except RuntimeError: outputs = {}
+    streams = streamer_telemetry(); adapters = []
+    for n, location in enumerate(attached_locations(), 1):
+        mode, rotate = adapter_settings(location, os.environ.get("JUA254_MODE", DEFAULT_MODE))
+        telemetry, opts = streams.get(location, (None, {}))
+        state, fps = stream_state(telemetry) if telemetry else ("stopped", 0)
+        output = outputs.get(opts.get("--monitor")) or {}
+        adapters.append({"number": n, "location": location, "mode": mode, "rotate": rotate, "state": state, "fps": fps,
+                         "output": opts.get("--monitor"), "workspace": output_workspace(output) if output else None})
+    return {"service": systemctl("is-active"), "enabled": systemctl("is-enabled") == "enabled",
+            "modes": list(MENU_MODES), "rotations": sorted(ROTATIONS), "adapters": adapters}
+
 def adapter_command(args):
+    if args.json: print(json.dumps(menu_status())); return 0
     attached = attached_locations()
     if args.location is None:
         if not attached: print("No JUA254 adapter is plugged in."); return 0
@@ -514,6 +560,7 @@ def main():
     adapter.add_argument("--mode", help="output resolution WxH@R from the adapter's mode table, e.g. 1680x1050@60")
     adapter.add_argument("--rotate", choices=sorted(ROTATIONS), help="for a monitor turned on its side")
     adapter.add_argument("--reset", action="store_true", help="back to 1920x1080@60, not rotated")
+    adapter.add_argument("--json", action="store_true", help="print the service and every adapter's state as JSON (for the bar menu)")
     for command in ("test", "external-test", "run"):
         p = sub.add_parser(command); p.add_argument("--fps", type=float, default=None,
                                                     help="frame rate; default 60 on the GPU path, 40 with --no-gpu")

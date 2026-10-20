@@ -95,6 +95,22 @@ jua254-monitor-adapter 3-1 --reset                       # back to 1920x1080@60,
 Settings are kept in `~/.config/jua254/adapters.json`. Keep each adapter in the same USB port.
 `JUA254_MODE` (in the service environment) still sets the default for adapters without a setting.
 
+### Omarchy bar widget
+
+`packaging/omarchy/jua254.display` is an Omarchy shell bar widget with the same controls as the macOS
+menu-bar app: status for each display (with the workspace shown on it, to tell them apart), Start/Stop,
+resolution and portrait rotation per display, start at login, and the log. Left click opens it, right
+click starts or stops the driver.
+
+```bash
+cp -r packaging/omarchy/jua254.display ~/.config/omarchy/plugins/
+omarchy-shell shell rescanPlugins
+omarchy plugin enable jua254.display --section right
+```
+
+It reads `jua254-monitor-adapter --json`. To use a source checkout's copy of the tool instead of the
+installed one: `omarchy bar set jua254.display adapterCommand /path/to/checkout/packaging/jua254-monitor-adapter`.
+
 ## Uninstall (per-user install)
 
 ```bash
