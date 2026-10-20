@@ -1,0 +1,5 @@
+module CTurbo [system] {
+    header "turbo.h"
+    link "jpeg"
+    export *
+}
