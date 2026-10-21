@@ -3,11 +3,13 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 
 // Omarchy bar counterpart of the macOS JUA254 Display menu-bar app: status per display,
-// Start/Stop, per-display resolution and portrait rotation, start at login, and the log.
+// Start/Stop, per-display resolution, portrait rotation and position, Identify (a red outline on that
+// screen), start at login, and the log.
 // All state comes from `jua254-monitor-adapter --json`; changes go through the same tool,
 // which the running jua254-monitor service picks up within a second.
 Panel {
@@ -22,6 +24,7 @@ Panel {
   property var info: ({ service: "unknown", enabled: false, modes: [], adapters: [] })
   property string lastError: ""
   property bool busy: actionProcess.running
+  property var identified: null  // the adapter whose screen is outlined by Identify
 
   readonly property var adapters: info.adapters || []
   readonly property bool running: info.service === "active" || info.service === "activating"
@@ -67,11 +70,29 @@ Panel {
     return modes.map(function(m) { return { value: m, label: modeLabel(m) } })
   }
 
+  // "Right of Laptop screen" etc. for every screen other than this adapter's own, after "Automatic".
+  function positionOptions(a) {
+    var sides = { left: "Left of", right: "Right of", above: "Above", below: "Below" }
+    var options = [{ value: "auto", label: "Automatic" }]
+    var screens = info.screens || [], sideNames = info.sides || []
+    screens.forEach(function(screen) {
+      if (screen.id === a.location) return
+      sideNames.forEach(function(side) {
+        options.push({ value: side + ":" + screen.id, label: (sides[side] || side) + " " + screen.label })
+      })
+    })
+    if (!options.some(function(o) { return o.value === a.position })) options.push({ value: a.position, label: a.position })
+    return options
+  }
+
   function refresh() {
     if (statusProcess.running) return
     statusProcess.command = ["bash", "-c", adapterCommand + " --json"]
     statusProcess.running = true
   }
+
+  // Not every Omarchy bar API has shellQuote, so quote here.
+  function shellQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'" }
 
   function act(command) {
     if (actionProcess.running) return
@@ -82,8 +103,15 @@ Panel {
 
   function startStop() { act("systemctl --user " + (running ? "stop " : "start ") + service) }
   function toggleLogin() { act("systemctl --user " + (info.enabled ? "disable " : "enable ") + service) }
-  function setMode(a, mode) { if (mode !== a.mode) act(adapterCommand + " " + bar.shellQuote(a.location) + " --mode " + bar.shellQuote(mode)) }
-  function setRotation(a, rotate) { if (rotate !== a.rotate) act(adapterCommand + " " + bar.shellQuote(a.location) + " --rotate " + bar.shellQuote(rotate)) }
+  function setMode(a, mode) { if (mode !== a.mode) act(adapterCommand + " " + shellQuote(a.location) + " --mode " + shellQuote(mode)) }
+  function setPosition(a, position) { if (position !== a.position) act(adapterCommand + " " + shellQuote(a.location) + " --position " + shellQuote(position)) }
+  function setRotation(a, rotate) { if (rotate !== a.rotate) act(adapterCommand + " " + shellQuote(a.location) + " --rotate " + shellQuote(rotate)) }
+  function identify(a) {
+    if (!a.output) return
+    identified = a
+    identifyTimer.restart()
+  }
+
   function showLog() {
     close()
     if (bar) bar.run("omarchy-launch-or-focus-tui journalctl --user -f -u " + service)
@@ -103,6 +131,48 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  Timer { id: identifyTimer; interval: 3000; onTriggered: root.identified = null }
+
+  // Identify: a red outline and the display's name on its screen, click-through, for a few seconds.
+  Variants {
+    model: root.identified ? Quickshell.screens.filter(function(s) { return s.name === root.identified.output }) : []
+
+    delegate: Component {
+      PanelWindow {
+        required property var modelData
+
+        screen: modelData
+        color: "transparent"
+        exclusionMode: ExclusionMode.Ignore
+        mask: Region {}
+
+        WlrLayershell.namespace: "jua254-identify"
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+
+        anchors { top: true; bottom: true; left: true; right: true }
+
+        Rectangle {
+          anchors.fill: parent
+          color: "transparent"
+          border.color: "#ff2020"
+          border.width: 12
+        }
+
+        Text {
+          anchors.centerIn: parent
+          text: root.identified ? "Display " + root.identified.number : ""
+          color: "#ff2020"
+          style: Text.Outline
+          styleColor: "black"
+          font.family: root.fontFamily
+          font.pixelSize: 96
+          font.bold: true
+        }
+      }
+    }
   }
 
   // The service applies a change within about a second; read back after it has.
@@ -234,10 +304,26 @@ Panel {
 
               PanelSeparator { foreground: root.foreground }
 
-              PanelSectionHeader {
-                text: root.adapterTitle(adapterColumn.modelData)
-                foreground: root.foreground
-                fontFamily: root.fontFamily
+              RowLayout {
+                width: parent.width
+                spacing: Style.space(8)
+
+                PanelSectionHeader {
+                  Layout.fillWidth: true
+                  text: root.adapterTitle(adapterColumn.modelData)
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                Button {
+                  text: "Identify"
+                  tooltipText: "Outline this display's screen in red"
+                  bordered: true
+                  enabled: !!adapterColumn.modelData.output
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.identify(adapterColumn.modelData)
+                }
               }
 
               Text {
@@ -271,6 +357,16 @@ Panel {
                   { value: "right", label: "Portrait right" }
                 ]
                 onChanged: function(value) { root.setRotation(adapterColumn.modelData, value) }
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Position"
+                value: adapterColumn.modelData.position || "auto"
+                options: root.positionOptions(adapterColumn.modelData)
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) { root.setPosition(adapterColumn.modelData, value) }
               }
             }
           }

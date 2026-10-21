@@ -371,9 +371,11 @@ static void cursor_request(struct app *a) {
 static void cursor_service(struct app *a) {
     struct cursor *c = &a->cursor;
     if (!a->hw_cursor || !c->capture) return;
+    /* Hyprland renders the cursor image as an opaque black square while the pointer is on another
+     * output; drop those, or the adapter shows the square when the pointer arrives. */
     if (c->frame && c->frame_done) {
         ext_image_copy_capture_frame_v1_destroy(c->frame); c->frame = NULL;
-        if (!c->frame_failed) {
+        if (!c->frame_failed && c->inside) {
             c->hot_x = c->pending_hot_x; c->hot_y = c->pending_hot_y;
             emit(a, REC_CURSOR_SHAPE, c->hot_x, c->hot_y, c->width, c->height, c->pixels, (uint32_t)c->size, 0, now_ns());
             c->pos_dirty = c->inside;

@@ -126,20 +126,80 @@ def pad_cursor(width, height, pixels, size=CURSOR_SIZE):
     return bytes(out)
 
 
+def is_placeholder(width, height, pixels):
+    """Hyprland's stand-in cursor images: one colour throughout (an opaque black square while the
+    pointer is elsewhere) or fully transparent (the first image of a session on its own output)."""
+    return len(pixels) < width * height * 4 or pixels == pixels[:4] * (width * height) or not any(pixels[3::4])
+
+XCURSOR_DIRS = ("~/.local/share/icons", "~/.icons", "/usr/share/icons", "/usr/share/pixmaps")
+
+def xcursor_file(theme, name, dirs=XCURSOR_DIRS, seen=None):
+    """Path of cursor `name` in an Xcursor theme, following the themes it inherits."""
+    seen = seen if seen is not None else set()
+    if theme in seen: return None
+    seen.add(theme)
+    for d in dirs:
+        path = Path(d).expanduser() / theme / "cursors" / name
+        if path.is_file(): return path
+    for d in dirs:
+        try: index = (Path(d).expanduser() / theme / "index.theme").read_text(errors="replace")
+        except OSError: continue
+        for line in index.splitlines():
+            if line.strip().lower().startswith("inherits="):
+                for parent in line.split("=", 1)[1].split(","):
+                    found = xcursor_file(parent.strip(), name, dirs, seen)
+                    if found: return found
+    return None
+
+def read_xcursor(data, size):
+    """(width, height, xhot, yhot, ARGB8888 pixels) of the image nearest `size` in an Xcursor file."""
+    magic, header, _, count = struct.unpack_from("<4sIII", data)
+    if magic != b"Xcur": raise ValueError("not an Xcursor file")
+    images = [struct.unpack_from("<III", data, header + 12 * i) for i in range(count)]
+    images = [(nominal, pos) for kind, nominal, pos in images if kind == 0xFFFD0002]
+    if not images: raise ValueError("no images in Xcursor file")
+    _, pos = min(images, key=lambda i: abs(i[0] - size))
+    _, _, _, _, w, h, xhot, yhot, _ = struct.unpack_from("<9I", data, pos)
+    return w, h, xhot, yhot, data[pos + 36:pos + 36 + w * h * 4]
+
+def theme_cursor(size=None, theme=None, dirs=XCURSOR_DIRS):
+    """The pointer theme's arrow as (64x64 slot pixels, (xhot, yhot)), or None if it can't be read."""
+    theme = theme or os.environ.get("XCURSOR_THEME") or "default"
+    try: size = int(size or os.environ.get("XCURSOR_SIZE") or 24)
+    except ValueError: size = 24
+    for name in ("left_ptr", "default", "arrow"):
+        path = xcursor_file(theme, name, dirs) or (xcursor_file("Adwaita", name, dirs) if theme != "Adwaita" else None)
+        if path is None: continue
+        try: w, h, xhot, yhot, pixels = read_xcursor(path.read_bytes(), size)
+        except (OSError, ValueError, struct.error): continue
+        return pad_cursor(w, h, pixels), (xhot, yhot)
+    return None
+
+
 class HardwareCursor:
-    """Mirror the compositor pointer onto the adapter's hardware cursor slot 0."""
-    def __init__(self, metrics):
+    """Mirror the compositor pointer onto the adapter's hardware cursor slot 0. Hyprland's stand-in
+    images (is_placeholder) are replaced by `fallback`, the theme arrow, or ignored without one."""
+    def __init__(self, metrics, fallback=None):
         self.metrics = metrics; self.shape = None; self.hot = (0, 0); self.pos = None; self.inside = False
+        self.fallback = fallback
         self.reset()
     def reset(self):
         self.shape_dirty = self.shape is not None; self.pos_dirty = self.pos is not None; self.shown = None
     def handle(self, record):
         kind, _, x, y, w, h, _, _, payload = record
         if kind == CURSOR_SHAPE:
+            if is_placeholder(w, h, payload):
+                self.metrics["cursor_placeholders"] += 1
+                if self.fallback is None or self.shape is not None: return
+                self.use_fallback(); return
             if w > CURSOR_SIZE or h > CURSOR_SIZE: self.metrics["cursor_cropped"] += 1
             self.shape = pad_cursor(w, h, payload); self.hot = (x, y); self.shape_dirty = True; self.pos_dirty = self.pos is not None
-        elif kind == CURSOR_POS: self.pos = (x, y); self.inside = True; self.pos_dirty = True
+        elif kind == CURSOR_POS:
+            self.pos = (x, y); self.inside = True; self.pos_dirty = True
+            if self.shape is None and self.fallback is not None: self.use_fallback()
         elif kind == CURSOR_LEAVE: self.inside = False
+    def use_fallback(self):
+        self.shape, self.hot = self.fallback; self.shape_dirty = True; self.pos_dirty = self.pos is not None
     def transfers(self):
         out = []
         if self.shape_dirty and self.shape is not None:
@@ -168,11 +228,11 @@ def run_gpu(args, template, framer, metrics, presentation, telemetry, diagnostic
             write_group_timed, record_successful_usb_update, payload_sha256, log_open_failure=None, note_adapter_ok=None):
     """Main loop for --capture gpu-native. Returns the open device (or None) for cleanup."""
     for name in ("gpu_full_frames", "gpu_tile_frames", "gpu_tiles", "capture_idle_waits", "cursor_shapes",
-                 "cursor_moves", "cursor_cropped", "frames_coalesced", "tiles_sent", "full_sent", "tiles_skipped_need_full", "too_large"):
+                 "cursor_moves", "cursor_cropped", "cursor_placeholders", "frames_coalesced", "tiles_sent", "full_sent", "tiles_skipped_need_full", "too_large"):
         metrics[name] = 0
     capture = GpuCapture(args.monitor or "eDP-1", metrics, args.quality, args.hw_cursor, args.damage_tiles,
                          args.tile, args.max_tiles, args.full_threshold)
-    cursor = HardwareCursor(metrics) if args.hw_cursor else None
+    cursor = HardwareCursor(metrics, theme_cursor()) if args.hw_cursor else None
     dev = None; pending = []; need_full = True; period = 1 / args.fps; last_send = 0.0
     stream_started = None; previous_sent = None; next_open = 0.0
     try:

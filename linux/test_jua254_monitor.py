@@ -144,11 +144,11 @@ def test_stream_command_mode():
 
 def test_apply_output_mode_resizes_only_on_mismatch():
     calls = []
-    outputs = [{"name": "HEADLESS-7", "width": 1920, "height": 1080, "scale": 1.25}]
+    outputs = [{"name": "HEADLESS-7", "width": 1920, "height": 1080, "scale": 1}]
     runner = lambda *a: calls.append(a) or "ok"
     assert apply_output_mode("HEADLESS-7", "1920x1080@60", lambda: outputs, runner) is False and calls == []
     assert apply_output_mode("HEADLESS-7", "1280x720@60", lambda: outputs, runner) is True
-    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1280x720@60", position = "auto", scale = 1.25, transform = 0 })')]
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1280x720@60", position = "auto", scale = 1, transform = 0 })')]
     assert apply_output_mode("HEADLESS-9", "1280x720@60", lambda: outputs, runner) is False
 
 def test_apply_output_mode_turns_output_and_keeps_its_place():
@@ -158,6 +158,13 @@ def test_apply_output_mode_turns_output_and_keeps_its_place():
     assert apply_output_mode("HEADLESS-7", "1680x1050@60", lambda: outputs, runner, transform=0) is False and calls == []
     assert apply_output_mode("HEADLESS-7", "1680x1050@60", lambda: outputs, runner, transform=3) is True
     assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-7", mode = "1680x1050@60", position = "1920x0", scale = 1, transform = 3 })')]
+
+def test_apply_output_mode_resets_inherited_scale_to_one():
+    calls = []
+    outputs = [{"name": "HEADLESS-5", "width": 1920, "height": 1080, "scale": 2, "x": 3200, "y": 0, "transform": 0}]
+    runner = lambda *a: calls.append(a) or "ok"
+    assert apply_output_mode("HEADLESS-5", "1920x1080@60", lambda: outputs, runner) is True
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-5", mode = "1920x1080@60", position = "auto", scale = 1, transform = 0 })')]
 
 def test_stream_command_explicitly_propagates_phase_experiment():
     class Args:
@@ -400,3 +407,51 @@ if __name__ == "__main__":
     jua254_monitor.ADAPTER_SETTINGS = Path(tempfile.mkdtemp()) / "adapters.json"  # never the real settings
     for test in (test_reuse_and_prune, test_create_and_cleanup, test_unowned_and_physical_are_protected, test_selector_string_is_resolved_to_monitor, test_window_rule_places_helper_without_focus_or_workspace_dispatch, test_stream_command_uses_package_template, test_stream_command_fb_rotation_opt_out, test_stream_command_payload_opt_outs, test_stream_command_gpu_path, test_stream_command_mode, test_apply_output_mode_resizes_only_on_mismatch, test_apply_output_mode_turns_output_and_keeps_its_place, test_stream_command_explicitly_propagates_phase_experiment, test_external_test_explicitly_enables_diagnostic_bars, test_service_restart_reuses_existing_managed_output, test_atomic_ownership_state_has_no_empty_restart_window, test_service_shutdown_preserves_output_for_replacement_process, test_unplug_replug_then_usb_error_reuses_replacement_output, test_disappeared_owned_output_is_replaced_once, test_ten_streamer_exits_preserve_same_ready_output, test_transient_compositor_query_failure_does_not_clear_ownership, test_child_status_one_and_capture_eof_restart_same_output, test_ten_child_failures_keep_supervisor_and_output, test_successful_bounded_child_exits_without_follow_on_stream, test_bounded_follow_on_requires_explicit_restart_option, test_physical_unplug_waits_and_reconnect_creates_one_replacement, test_signal_handler_state_survives_unplug_monitor_snapshot): test()
     print("jua254_monitor lifecycle tests: PASS")
+
+def test_parse_position_accepts_sides_points_and_auto():
+    from jua254_monitor import parse_position
+    assert parse_position(None) is None and parse_position("auto") is None
+    assert parse_position("right:eDP-1") == ("next", "right", "eDP-1")
+    assert parse_position("left:2-2.3.1") == ("next", "left", "2-2.3.1")
+    assert parse_position("-1920x0") == ("at", -1920, 0)
+    for bad in ("beside:eDP-1", "right:", "nowhere"):
+        try: parse_position(bad)
+        except ValueError: continue
+        raise AssertionError(bad)
+
+def test_placed_positions_follow_targets_in_layout_pixels():
+    from jua254_monitor import placed_positions
+    outputs = [{"name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1.5},
+               {"name": "HEADLESS-5", "x": 9000, "y": 0, "width": 1920, "height": 1080, "scale": 1},
+               {"name": "HEADLESS-6", "x": 5000, "y": 0, "width": 1680, "height": 1050, "scale": 1, "transform": 1}]
+    placements = {"HEADLESS-6": ("next", "right", "HEADLESS-5"),  # chained: placed after its target
+                  "HEADLESS-5": ("next", "right", "eDP-1")}
+    assert placed_positions(placements, outputs) == {"HEADLESS-5": (1280, 0), "HEADLESS-6": (3200, 0)}
+    assert placed_positions({"HEADLESS-6": ("next", "left", "eDP-1")}, outputs) == {"HEADLESS-6": (-1050, 0)}
+    assert placed_positions({"HEADLESS-5": ("next", "below", "eDP-1")}, outputs) == {"HEADLESS-5": (0, 720)}
+    assert placed_positions({"HEADLESS-5": ("at", 10, 20)}, outputs) == {"HEADLESS-5": (10, 20)}
+    loop = {"HEADLESS-5": ("next", "right", "HEADLESS-6"), "HEADLESS-6": ("next", "right", "HEADLESS-5")}
+    assert placed_positions(loop, outputs) == {}
+    assert placed_positions({"HEADLESS-5": ("next", "right", "DP-9")}, outputs) == {}
+
+def test_place_outputs_moves_only_misplaced_outputs():
+    from jua254_monitor import place_outputs
+    calls = []
+    outputs = [{"name": "eDP-1", "x": 0, "y": 0, "width": 1280, "height": 720, "scale": 1},
+               {"name": "HEADLESS-5", "x": 1280, "y": 0, "width": 1920, "height": 1080, "scale": 1},
+               {"name": "HEADLESS-6", "x": 7000, "y": 0, "width": 1680, "height": 1050, "scale": 1, "transform": 3}]
+    runner = lambda *a: calls.append(a) or "ok"
+    moved = place_outputs({"HEADLESS-5": (("next", "right", "eDP-1"), "1920x1080@60", 0),
+                           "HEADLESS-6": (("next", "right", "HEADLESS-5"), "1680x1050@60", 3)}, lambda: outputs, runner)
+    assert moved == ["HEADLESS-6"]
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-6", mode = "1680x1050@60", position = "3200x0", scale = 1, transform = 3 })')]
+
+def test_save_adapter_settings_keeps_and_clears_position():
+    from jua254_monitor import save_adapter_settings, load_adapter_settings, adapter_position
+    path = Path(tempfile.mkdtemp()) / "adapters.json"
+    assert save_adapter_settings("2-1", position="right:eDP-1", path=path) == {"position": "right:eDP-1"}
+    assert adapter_position("2-1", path) == ("next", "right", "eDP-1")
+    save_adapter_settings("2-1", rotate="left", path=path)
+    assert load_adapter_settings(path)["2-1"] == {"position": "right:eDP-1", "rotate": "left"}
+    save_adapter_settings("2-1", position="auto", path=path)
+    assert load_adapter_settings(path)["2-1"] == {"rotate": "left"} and adapter_position("2-1", path) is None

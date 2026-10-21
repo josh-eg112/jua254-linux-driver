@@ -66,20 +66,21 @@ root; it asks for your password once. **Unplug and replug the adapter once** aft
 
 The driver installs into `~/.local/share/jua254` and runs as the `jua254-monitor` systemd user
 service, which starts with your graphical session. A new monitor (`HEADLESS-N`) appears in Hyprland
-whenever the adapter is connected; arrange it like any other monitor.
+whenever the adapter is connected; place it with `jua254-monitor-adapter --position` (below), since
+its `HEADLESS-N` name can change and a Hyprland monitor rule for it would not keep applying.
 
 ## Use
 
 | Command | What it does |
 | --- | --- |
 | `jua254-monitor-status` | Service, adapter and output status |
-| `jua254-monitor-adapter` | Each adapter's resolution and rotation (see below) |
+| `jua254-monitor-adapter` | Each adapter's resolution, rotation and position (see below) |
 | `jua254-monitor-stop` | Stop the service and remove the extra monitor |
 | `jua254-monitor-start` | Start it again |
 | `jua254-monitor-diagnostic` | Write a diagnostic report for bug reports |
 | `journalctl --user -u jua254-monitor` | Service log |
 
-### Resolution and rotation
+### Resolution, rotation and position
 
 Each adapter is identified by the USB port it is plugged into. List them, then set a resolution its
 monitor supports (for one that says "input out of range") or rotate it for a monitor turned on its
@@ -89,8 +90,16 @@ side; the running service applies the change within a second:
 jua254-monitor-adapter                                   # e.g. "3-1: 1920x1080@60"
 jua254-monitor-adapter 3-1 --mode 1680x1050@60
 jua254-monitor-adapter 3-1 --rotate left                 # upside down? use --rotate right
-jua254-monitor-adapter 3-1 --reset                       # back to 1920x1080@60, not rotated
+jua254-monitor-adapter 3-1 --position right:eDP-1        # to the right of the laptop screen
+jua254-monitor-adapter 3-2 --position right:3-1          # to the right of the adapter in port 3-1
+jua254-monitor-adapter 3-1 --position auto               # let Hyprland place it
+jua254-monitor-adapter 3-1 --reset                       # back to 1920x1080@60, not rotated, placed automatically
 ```
+
+A position is `left`, `right`, `above` or `below` another screen, named by its output (`hyprctl
+monitors`) or, for another adapter, its USB port; or a fixed `XxY` in layout pixels (e.g. `1920x0`).
+The service keeps the screen there as the screens around it move. Give your own monitors fixed
+positions in `~/.config/hypr/monitors.lua` so the whole layout stays put.
 
 Settings are kept in `~/.config/jua254/adapters.json`. Keep each adapter in the same USB port.
 `JUA254_MODE` (in the service environment) still sets the default for adapters without a setting.
@@ -99,7 +108,7 @@ Settings are kept in `~/.config/jua254/adapters.json`. Keep each adapter in the 
 
 `packaging/omarchy/jua254.display` is an Omarchy shell bar widget with the same controls as the macOS
 menu-bar app: status for each display (with the workspace shown on it, to tell them apart), Start/Stop,
-resolution and portrait rotation per display, start at login, and the log. Left click opens it, right
+resolution, portrait rotation and position per display, Identify (outlines that screen in red), start at login, and the log. Left click opens it, right
 click starts or stops the driver.
 
 The Arch package installs it to `/usr/share/jua254/omarchy/jua254.display`; from a checkout it is in `packaging/omarchy`.
