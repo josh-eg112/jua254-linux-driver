@@ -7,10 +7,15 @@ from jua254_diagnostics import DiagnosticsState
 
 STATE_DIR = Path(os.environ.get("JUA254_STATE_DIR", Path.home() / ".local/state/jua254"))
 OWNERSHIP_FILE = STATE_DIR / "headless-outputs.json"
-# Per-adapter settings, keyed by USB location ("bus-port"): {"3-1": {"mode": "1680x1050@60", "rotate": "left"}}.
+# Per-adapter settings, keyed by USB location ("bus-port"):
+# {"3-1": {"mode": "1680x1050@60", "rotate": "left", "position": "right:eDP-1"}}.
 ADAPTER_SETTINGS = Path(os.environ.get("JUA254_ADAPTER_SETTINGS", Path.home() / ".config/jua254/adapters.json"))
 # Hyprland output transforms for a monitor turned on its side; if the picture is upside down, use the other.
 ROTATIONS = {"none": 0, "right": 1, "left": 3}
+# Where an adapter's screen goes: "<side>:<target>" puts it against another screen, the target being an
+# output name (eDP-1, DP-6) or another adapter's USB location; "XxY" is a fixed place in layout pixels.
+# No position leaves it to Hyprland ("auto").
+PLACE_SIDES = ("left", "right", "above", "below")
 HEADLESS_PREFIXES = ("HEADLESS-", "VIRTUAL-")
 SUPPORTED_PRODUCTS = ("5600", "5601")  # JUA254 and A8640H (same MCT Trigger 6 hardware)
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "shared/handoff/linux-rgb-bars-20260825"
@@ -157,13 +162,31 @@ def adapter_settings(location, default_mode=DEFAULT_MODE, path=None):
     rotate = saved.get("rotate") if saved.get("rotate") in ROTATIONS else "none"
     return mode, rotate
 
-def save_adapter_settings(location, mode=None, rotate=None, reset=False, path=None):
+def adapter_position(location, path=None):
+    """The adapter's saved position, parsed (see parse_position), or None to leave it to Hyprland."""
+    try: return parse_position((load_adapter_settings(path).get(location) or {}).get("position"))
+    except ValueError: return None
+
+def parse_position(spec):
+    """("next", side, target) for "<side>:<target>", ("at", x, y) for "XxY", None for "auto" or nothing."""
+    if spec in (None, "", "auto"): return None
+    side, sep, target = str(spec).partition(":")
+    if sep:
+        if side not in PLACE_SIDES or not target: raise ValueError(f"expected <side>:<screen> with side one of {', '.join(PLACE_SIDES)}")
+        return ("next", side, target)
+    x, sep, y = str(spec).lower().partition("x")
+    try: return ("at", int(x), int(y))
+    except ValueError: raise ValueError("expected auto, XxY (e.g. 1920x0) or <side>:<screen> (e.g. right:eDP-1)") from None
+
+def save_adapter_settings(location, mode=None, rotate=None, reset=False, path=None, position=None):
     path = Path(path or ADAPTER_SETTINGS); data = load_adapter_settings(path)
     entry = {} if reset else dict(data.get(location) or {})
     if mode is not None: entry["mode"] = mode
     if rotate is not None: entry["rotate"] = rotate
+    if position is not None: entry["position"] = position
     if entry.get("mode") == DEFAULT_MODE: entry.pop("mode")
     if entry.get("rotate") == "none": entry.pop("rotate")
+    if entry.get("position") == "auto": entry.pop("position")
     if entry: data[location] = entry
     else: data.pop(location, None)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,19 +194,76 @@ def save_adapter_settings(location, mode=None, rotate=None, reset=False, path=No
     return entry
 
 def apply_output_mode(name, mode, list_monitors=None, runner=None, transform=0):
-    """Size and turn the managed output to the adapter mode, keeping its scale and place; no-op when it
-    already matches. Hyprland renders a turned output into a buffer of the mode's size (the sideways
-    monitor's own orientation), so capture and the adapter mode are unchanged by the rotation."""
+    """Size and turn the managed output to the adapter mode at scale 1, keeping its place; no-op when it
+    already matches. Scale is forced to 1 because a catch-all monitor rule (Omarchy's `scale = "auto"`)
+    otherwise scales the headless output too, shrinking the adapter's desktop (1920x1080 at 2 looks like
+    960x540). A rescaled output is placed "auto", since its old place was laid out for the scaled size.
+    Hyprland renders a turned output into a buffer of the mode's size (the sideways monitor's own
+    orientation), so capture and the adapter mode are unchanged by the rotation."""
     list_monitors = list_monitors or monitors; runner = runner or hypr
     size, _, _ = mode.partition("@"); w, _, h = size.lower().partition("x")
     output = next((m for m in list_monitors() if m.get("name") == name), None)
+    rescale = output is not None and output.get("scale", 1) != 1
     if output is None or ((output.get("width"), output.get("height")) == (int(w), int(h))
-                          and output.get("transform", 0) == transform): return False
-    scale = output.get("scale", 1)
-    position = f'{output["x"]}x{output["y"]}' if isinstance(output.get("x"), int) and isinstance(output.get("y"), int) else "auto"
-    runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{position}", scale = {scale}, '
+                          and output.get("transform", 0) == transform and not rescale): return False
+    placed = isinstance(output.get("x"), int) and isinstance(output.get("y"), int) and not rescale
+    position = f'{output["x"]}x{output["y"]}' if placed else "auto"
+    runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{position}", scale = 1, '
                    f'transform = {transform} }})')
     return True
+
+def layout_size(output):
+    """An output's (width, height) in layout pixels: its mode over its scale, turned with it."""
+    scale = output.get("scale") or 1
+    w, h = round(output.get("width", 0) / scale), round(output.get("height", 0) / scale)
+    return (h, w) if output.get("transform", 0) % 2 else (w, h)
+
+def placed_positions(placements, outputs):
+    """{name: (x, y)} for each output in `placements` ({name: parsed position}), each side placement
+    against its target's box once the target itself is placed. Missing targets and loops are skipped."""
+    boxes = {m["name"]: [m.get("x", 0), m.get("y", 0), *layout_size(m)] for m in outputs if m.get("name")}
+    result, resolving = {}, set()
+    def resolve(name):
+        if name in result or name not in boxes or name in resolving: return result.get(name)
+        resolving.add(name)
+        kind, a, b = placements[name]
+        if kind == "next" and b in placements and resolve(b) is None: return None
+        if kind == "at": pos = (a, b)
+        elif b in boxes:
+            tx, ty, tw, th = boxes[b]; w, h = boxes[name][2:]
+            pos = {"left": (tx - w, ty), "right": (tx + tw, ty), "above": (tx, ty - h), "below": (tx, ty + th)}[a]
+        else: return None
+        boxes[name][:2] = pos; result[name] = pos
+        return pos
+    for name in placements: resolve(name)
+    return result
+
+def pin_output(output, runner):
+    """Fix a compositor output at its current mode, place, scale and turn, so auto layout leaves it be."""
+    if output is None or not isinstance(output.get("x"), int) or not isinstance(output.get("y"), int): return
+    mode = f'{output["width"]}x{output["height"]}@{output.get("refreshRate", 60):.3f}'
+    runner("eval", f'hl.monitor({{ output = "{output["name"]}", mode = "{mode}", position = "{output["x"]}x{output["y"]}", '
+                   f'scale = {output.get("scale") or 1:g}, transform = {output.get("transform", 0)} }})')
+
+def place_outputs(placements, list_monitors=None, runner=None):
+    """Move each output in `placements` ({name: (parsed position, mode, transform)}) to its place when it
+    is elsewhere; returns the names moved. Only the position changes, so streaming carries on."""
+    list_monitors = list_monitors or monitors; runner = runner or hypr
+    outputs = list_monitors(); current = {m.get("name"): (m.get("x"), m.get("y")) for m in outputs}
+    moved = []
+    targets = placed_positions({n: p for n, (p, _, _) in placements.items()}, outputs)
+    if any(current.get(name) != pos for name, pos in targets.items()):
+        # A screen placed against one Hyprland lays out "auto" would chase it forever: each move re-runs
+        # the auto layout, which shifts the target past the moved screen. Pin such targets where they are.
+        for target in {p[2] for p, _, _ in placements.values() if p[0] == "next"} - set(placements):
+            pin_output(next((m for m in outputs if m.get("name") == target), None), runner)
+    for name, (x, y) in targets.items():
+        if current.get(name) == (x, y): continue
+        _, mode, transform = placements[name]
+        runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{x}x{y}", scale = 1, '
+                       f'transform = {transform} }})')
+        moved.append(name)
+    return moved
 
 def wait_output_ready(name, timeout=3, list_monitors=monitors):
     """Wait until the exact output is enabled and has captureable dimensions."""
@@ -238,7 +318,7 @@ def diagnostic(path=None):
     print(json.dumps({"bundle": str(path), "device_present": result["device_present"], "owned_outputs": result["owned_outputs"]}, indent=2))
     return 0
 
-def stream_command(name, args, mode=None):
+def stream_command(name, args, mode=None, rotate="none"):
     seconds = [] if args.seconds is None else ["--seconds", str(args.seconds)]
     diagnostic = ["--diagnostic-bootstrap"] if getattr(args, "command", None) in ("test", "external-test") else []
     state = ["--diagnostics-state", str(args.diagnostics_state)] if getattr(args, "diagnostics_state", None) else []
@@ -251,7 +331,9 @@ def stream_command(name, args, mode=None):
     fps = args.fps if args.fps is not None else (60 if gpu else 40)
     if gpu:
         capture = ["--capture", "gpu-native"]
-        capture += [] if getattr(args, "no_hw_cursor", False) else ["--hw-cursor"]
+        # The adapter's hardware cursor is neither turned nor moved with a rotated output, so a turned
+        # screen gets a sideways second pointer; let Hyprland paint the pointer into its frames instead.
+        capture += [] if getattr(args, "no_hw_cursor", False) or rotate != "none" else ["--hw-cursor"]
         capture += ["--damage-tiles"] if getattr(args, "damage_tiles", False) else []
         mode = mode or getattr(args, "mode", DEFAULT_MODE)
         capture += ["--mode", mode] if mode != DEFAULT_MODE else []
@@ -333,7 +415,7 @@ class Session:
                 mode, rotate = adapter_settings(self.location, getattr(args, "mode", DEFAULT_MODE))
                 if apply_output_mode(self.name, mode, transform=ROTATIONS[rotate]): wait_output_ready(self.name)
                 self.settings = (mode, rotate)
-                self.child = subprocess.Popen(stream_command(self.name, args, mode) + self.stream_args())
+                self.child = subprocess.Popen(stream_command(self.name, args, mode, rotate) + self.stream_args())
                 diagnostics.event("child_start", generation=generation, child_pid=getattr(self.child, "pid", None),
                                   output=self.name, adapter=self.location)
             except (OSError, RuntimeError) as exc:
@@ -365,6 +447,22 @@ class Session:
 
     def path_kw(self):
         return {"path": self.kw["state_path"]} if self.kw else {}
+
+def place_sessions(sessions):
+    """Keep each streaming adapter's output where its saved position puts it."""
+    placements = {}
+    for session in sessions.values():
+        position = adapter_position(session.location)
+        if position is None or session.name is None or session.child is None or session.settings is None: continue
+        if position[0] == "next" and position[2] in sessions:  # another adapter: its current output
+            position = ("next", position[1], sessions[position[2]].name)
+        mode, rotate = session.settings
+        placements[session.name] = (position, mode, ROTATIONS[rotate])
+    if not placements: return
+    try:
+        for name in place_outputs(placements): print(f"JUA254 placed output={name}", flush=True)
+    except RuntimeError as exc:
+        print(f"JUA254 placement deferred: {exc}", flush=True)
 
 def run_service(args):
     """Maintain one managed output and streamer per attached adapter across unplug/replug."""
@@ -398,6 +496,7 @@ def run_service(args):
             waits = [session.step(args, diagnostics, generation) for session in sorted(sessions.values(), key=lambda s: s.number)]
             if None in waits:
                 break
+            place_sessions(sessions)
             time.sleep(min(waits))
     finally:
         diagnostics.event("supervisor_stop", generation=generation, stopping=stopping)
@@ -520,10 +619,21 @@ def menu_status():
         telemetry, opts = streams.get(location, (None, {}))
         state, fps = stream_state(telemetry) if telemetry else ("stopped", 0)
         output = outputs.get(opts.get("--monitor")) or {}
-        adapters.append({"number": n, "location": location, "mode": mode, "rotate": rotate, "state": state, "fps": fps,
+        saved = (load_adapter_settings().get(location) or {}).get("position") or "auto"
+        adapters.append({"number": n, "location": location, "mode": mode, "rotate": rotate, "position": saved,
+                         "state": state, "fps": fps,
                          "output": opts.get("--monitor"), "workspace": output_workspace(output) if output else None})
+    # Screens an adapter can be placed against: the computer's own, then the other adapters.
+    screens = [{"id": name, "label": ("Laptop screen" if name.startswith("eDP") else
+                                      f"{name} {m.get('model') or ''}".strip())}
+               for name, m in outputs.items() if name and not _is_virtual(name) and not m.get("disabled")]
+    screens += [{"id": a["location"], "label": f"Display {a['number']}"} for a in adapters]
     return {"service": systemctl("is-active"), "enabled": systemctl("is-enabled") == "enabled",
-            "modes": list(MENU_MODES), "rotations": sorted(ROTATIONS), "adapters": adapters}
+            "modes": list(MENU_MODES), "rotations": sorted(ROTATIONS), "sides": list(PLACE_SIDES),
+            "screens": screens, "adapters": adapters}
+
+def describe_settings(mode, rotate, position):
+    return mode + (f", rotated {rotate}" if rotate != "none" else "") + (f", placed {position}" if position else "")
 
 def adapter_command(args):
     if args.json: print(json.dumps(menu_status())); return 0
@@ -532,18 +642,20 @@ def adapter_command(args):
         if not attached: print("No JUA254 adapter is plugged in."); return 0
         for n, location in enumerate(attached, 1):
             mode, rotate = adapter_settings(location, os.environ.get("JUA254_MODE", DEFAULT_MODE))
-            print(f"{location}: {mode}" + (f", rotated {rotate}" if rotate != "none" else ""))
-        print("Change one with: jua254-monitor-adapter LOCATION --mode 1680x1050@60 --rotate left")
+            print(f"{location}: {describe_settings(mode, rotate, (load_adapter_settings().get(location) or {}).get('position'))}")
+        print("Change one with: jua254-monitor-adapter LOCATION --mode 1680x1050@60 --rotate left --position right:eDP-1")
         return 0
     if args.mode is not None:
         from jua254_stream import VideoMode
         try: VideoMode.parse(args.mode)
         except ValueError as exc: print(f"--mode: {exc}", file=sys.stderr); return 2
+    if args.position is not None:
+        try: parse_position(args.position)
+        except ValueError as exc: print(f"--position: {exc}", file=sys.stderr); return 2
     if args.location not in attached:
         print(f"Note: no adapter at {args.location} right now; the setting applies when one is plugged in there.")
-    entry = save_adapter_settings(args.location, args.mode, args.rotate, args.reset)
-    mode = entry.get("mode", DEFAULT_MODE); rotate = entry.get("rotate", "none")
-    print(f"{args.location}: {mode}" + (f", rotated {rotate}" if rotate != "none" else "") +
+    entry = save_adapter_settings(args.location, args.mode, args.rotate, args.reset, position=args.position)
+    print(f"{args.location}: {describe_settings(entry.get('mode', DEFAULT_MODE), entry.get('rotate', 'none'), entry.get('position'))}"
           " (a running jua254-monitor service applies it within a second)")
     return 0
 
@@ -555,11 +667,13 @@ def main():
     create = sub.add_parser("create"); create.add_argument("--backend", choices=("headless", "wayland", "x11"), default="headless")
     remove = sub.add_parser("remove"); remove.add_argument("name")
     sub.add_parser("cleanup")
-    adapter = sub.add_parser("adapter", help="show or change each adapter's resolution and rotation")
+    adapter = sub.add_parser("adapter", help="show or change each adapter's resolution, rotation and position")
     adapter.add_argument("location", nargs="?", help="USB location as listed (e.g. 3-1); omit to list the adapters")
     adapter.add_argument("--mode", help="output resolution WxH@R from the adapter's mode table, e.g. 1680x1050@60")
     adapter.add_argument("--rotate", choices=sorted(ROTATIONS), help="for a monitor turned on its side")
-    adapter.add_argument("--reset", action="store_true", help="back to 1920x1080@60, not rotated")
+    adapter.add_argument("--position", help="where the screen goes: right:eDP-1 (left/right/above/below another screen, "
+                                           "named by output or adapter USB location), 1920x0 in layout pixels, or auto")
+    adapter.add_argument("--reset", action="store_true", help="back to 1920x1080@60, not rotated, placed automatically")
     adapter.add_argument("--json", action="store_true", help="print the service and every adapter's state as JSON (for the bar menu)")
     for command in ("test", "external-test", "run"):
         p = sub.add_parser(command); p.add_argument("--fps", type=float, default=None,

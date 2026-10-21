@@ -106,7 +106,7 @@ def test_pad_cursor_top_left():
 
 def test_hardware_cursor_transfers():
     c = HardwareCursor(Metrics())
-    shape = (CURSOR_SHAPE, 0, 3, 4, 24, 24, 0, 0, bytes(24 * 24 * 4))
+    shape = (CURSOR_SHAPE, 0, 3, 4, 24, 24, 0, 0, bytes((255, 255, 255, 255)) + bytes(24 * 24 * 4 - 4))
     assert c.transfers() == [(0x40, REQ_STATE, 0, 0, None)]  # hidden until the pointer enters
     assert c.transfers() == []
     c.handle(shape); c.handle((CURSOR_POS, 0, 100, 200, 0, 0, 0, 0, b""))
@@ -119,6 +119,42 @@ def test_hardware_cursor_transfers():
     assert [t[1] for t in c.transfers()] == [REQ_STATE]
     c.reset(); c.handle((CURSOR_POS, 0, 10, 10, 0, 0, 0, 0, b""))  # after reconnect
     assert [t[1] for t in c.transfers()] == [REQ_SHAPE] * 5 + [REQ_POS, REQ_STATE]  # 8-byte header + 16 KiB in 4 KiB chunks
+
+def test_hardware_cursor_replaces_hyprland_placeholders():
+    from jua254_gpu import is_placeholder
+    black = bytes((0, 0, 0, 255)) * (48 * 48)
+    clear = bytes(48 * 48 * 4)
+    real = bytes((255, 255, 255, 255)) + clear[4:]
+    assert is_placeholder(48, 48, black) and is_placeholder(48, 48, clear) and not is_placeholder(48, 48, real)
+    fallback = (bytes((9, 9, 9, 255)) * (64 * 64), (3, 1))
+    c = HardwareCursor(Metrics(), fallback)
+    c.handle((CURSOR_POS, 0, 100, 200, 0, 0, 0, 0, b""))  # entered with no image yet: the theme arrow
+    assert c.shape == fallback[0] and [t[1] for t in c.transfers()][-2:] == [REQ_POS, REQ_STATE]
+    c.handle((CURSOR_SHAPE, 0, 6, 2, 48, 48, 0, 0, real))
+    assert c.hot == (6, 2) and c.shape[:4] == real[:4]
+    c.handle((CURSOR_SHAPE, 0, 0, 0, 48, 48, 0, 0, black))  # a placeholder never replaces a real image
+    assert c.hot == (6, 2) and c.shape[:4] == real[:4]
+    plain = HardwareCursor(Metrics())  # without a theme arrow, placeholders are just ignored
+    plain.handle((CURSOR_SHAPE, 0, 0, 0, 48, 48, 0, 0, black)); plain.handle((CURSOR_POS, 0, 1, 1, 0, 0, 0, 0, b""))
+    assert plain.shape is None and plain.transfers() == [(0x40, REQ_STATE, 0, 0, None)]  # stays hidden
+
+def test_theme_cursor_reads_inherited_xcursor_theme():
+    import struct, tempfile
+    from jua254_gpu import theme_cursor
+    root = Path(tempfile.mkdtemp())
+    (root / "default").mkdir(); (root / "default/index.theme").write_text("[Icon Theme]\nInherits=Base\n")
+    (root / "Base/cursors").mkdir(parents=True)
+    def image(nominal, size, hot):
+        return struct.pack("<9I", 36, 0xFFFD0002, nominal, 1, size, size, hot, hot, 0) + bytes((nominal, 0, 0, 255)) * (size * size)
+    small, large = image(24, 24, 3), image(48, 48, 6)
+    toc_end = 16 + 2 * 12
+    data = struct.pack("<4sIII", b"Xcur", 16, 0x10000, 2) + struct.pack("<III", 0xFFFD0002, 24, toc_end) + \
+           struct.pack("<III", 0xFFFD0002, 48, toc_end + len(small)) + small + large
+    (root / "Base/cursors/left_ptr").write_bytes(data)
+    pixels, hot = theme_cursor(48, "default", (str(root),))
+    assert hot == (6, 6) and pixels[:4] == bytes((48, 0, 0, 255)) and len(pixels) == 64 * 64 * 4
+    assert theme_cursor(24, "default", (str(root),))[1] == (3, 3)
+    assert theme_cursor(24, "Missing", (str(root / "nowhere"),)) is None
 
 def test_oversized_frame_is_skipped_without_reconnecting():
     """A frame too detailed for the adapter's slot is dropped and a full frame requested; the USB
