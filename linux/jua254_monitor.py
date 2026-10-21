@@ -238,13 +238,26 @@ def placed_positions(placements, outputs):
     for name in placements: resolve(name)
     return result
 
+def pin_output(output, runner):
+    """Fix a compositor output at its current mode, place, scale and turn, so auto layout leaves it be."""
+    if output is None or not isinstance(output.get("x"), int) or not isinstance(output.get("y"), int): return
+    mode = f'{output["width"]}x{output["height"]}@{output.get("refreshRate", 60):.3f}'
+    runner("eval", f'hl.monitor({{ output = "{output["name"]}", mode = "{mode}", position = "{output["x"]}x{output["y"]}", '
+                   f'scale = {output.get("scale") or 1:g}, transform = {output.get("transform", 0)} }})')
+
 def place_outputs(placements, list_monitors=None, runner=None):
     """Move each output in `placements` ({name: (parsed position, mode, transform)}) to its place when it
     is elsewhere; returns the names moved. Only the position changes, so streaming carries on."""
     list_monitors = list_monitors or monitors; runner = runner or hypr
     outputs = list_monitors(); current = {m.get("name"): (m.get("x"), m.get("y")) for m in outputs}
     moved = []
-    for name, (x, y) in placed_positions({n: p for n, (p, _, _) in placements.items()}, outputs).items():
+    targets = placed_positions({n: p for n, (p, _, _) in placements.items()}, outputs)
+    if any(current.get(name) != pos for name, pos in targets.items()):
+        # A screen placed against one Hyprland lays out "auto" would chase it forever: each move re-runs
+        # the auto layout, which shifts the target past the moved screen. Pin such targets where they are.
+        for target in {p[2] for p, _, _ in placements.values() if p[0] == "next"} - set(placements):
+            pin_output(next((m for m in outputs if m.get("name") == target), None), runner)
+    for name, (x, y) in targets.items():
         if current.get(name) == (x, y): continue
         _, mode, transform = placements[name]
         runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{x}x{y}", scale = 1, '
@@ -305,7 +318,7 @@ def diagnostic(path=None):
     print(json.dumps({"bundle": str(path), "device_present": result["device_present"], "owned_outputs": result["owned_outputs"]}, indent=2))
     return 0
 
-def stream_command(name, args, mode=None):
+def stream_command(name, args, mode=None, rotate="none"):
     seconds = [] if args.seconds is None else ["--seconds", str(args.seconds)]
     diagnostic = ["--diagnostic-bootstrap"] if getattr(args, "command", None) in ("test", "external-test") else []
     state = ["--diagnostics-state", str(args.diagnostics_state)] if getattr(args, "diagnostics_state", None) else []
@@ -318,7 +331,9 @@ def stream_command(name, args, mode=None):
     fps = args.fps if args.fps is not None else (60 if gpu else 40)
     if gpu:
         capture = ["--capture", "gpu-native"]
-        capture += [] if getattr(args, "no_hw_cursor", False) else ["--hw-cursor"]
+        # The adapter's hardware cursor is neither turned nor moved with a rotated output, so a turned
+        # screen gets a sideways second pointer; let Hyprland paint the pointer into its frames instead.
+        capture += [] if getattr(args, "no_hw_cursor", False) or rotate != "none" else ["--hw-cursor"]
         capture += ["--damage-tiles"] if getattr(args, "damage_tiles", False) else []
         mode = mode or getattr(args, "mode", DEFAULT_MODE)
         capture += ["--mode", mode] if mode != DEFAULT_MODE else []
@@ -400,7 +415,7 @@ class Session:
                 mode, rotate = adapter_settings(self.location, getattr(args, "mode", DEFAULT_MODE))
                 if apply_output_mode(self.name, mode, transform=ROTATIONS[rotate]): wait_output_ready(self.name)
                 self.settings = (mode, rotate)
-                self.child = subprocess.Popen(stream_command(self.name, args, mode) + self.stream_args())
+                self.child = subprocess.Popen(stream_command(self.name, args, mode, rotate) + self.stream_args())
                 diagnostics.event("child_start", generation=generation, child_pid=getattr(self.child, "pid", None),
                                   output=self.name, adapter=self.location)
             except (OSError, RuntimeError) as exc:

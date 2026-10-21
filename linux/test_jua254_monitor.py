@@ -127,6 +127,8 @@ def test_stream_command_gpu_path():
     Args.damage_tiles = True; Args.no_hw_cursor = True
     command = stream_command("HEADLESS-7", Args())
     assert "--damage-tiles" in command and "--hw-cursor" not in command
+    Args.no_hw_cursor = False
+    assert "--hw-cursor" not in stream_command("HEADLESS-7", Args(), rotate="right")  # painted into frames instead
     Args.no_gpu = True
     command = stream_command("HEADLESS-7", Args())
     assert command[command.index("--capture") + 1] == "wlroots-native" and "--hw-cursor" not in command
@@ -444,7 +446,21 @@ def test_place_outputs_moves_only_misplaced_outputs():
     moved = place_outputs({"HEADLESS-5": (("next", "right", "eDP-1"), "1920x1080@60", 0),
                            "HEADLESS-6": (("next", "right", "HEADLESS-5"), "1680x1050@60", 3)}, lambda: outputs, runner)
     assert moved == ["HEADLESS-6"]
-    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-6", mode = "1680x1050@60", position = "3200x0", scale = 1, transform = 3 })')]
+    assert calls == [("eval", 'hl.monitor({ output = "eDP-1", mode = "1280x720@60.000", position = "0x0", scale = 1, transform = 0 })'),
+                     ("eval", 'hl.monitor({ output = "HEADLESS-6", mode = "1680x1050@60", position = "3200x0", scale = 1, transform = 3 })')]
+
+def test_place_outputs_pins_unmanaged_target_so_auto_layout_cannot_chase():
+    from jua254_monitor import place_outputs
+    calls = []
+    outputs = [{"name": "eDP-1", "x": 1050, "y": 0, "width": 1920, "height": 1080, "scale": 1.5, "refreshRate": 60.049},
+               {"name": "HEADLESS-6", "x": 0, "y": 0, "width": 1680, "height": 1050, "scale": 1, "transform": 1}]
+    runner = lambda *a: calls.append(a) or "ok"
+    placements = {"HEADLESS-6": (("next", "right", "eDP-1"), "1680x1050@60", 1)}
+    assert place_outputs(placements, lambda: outputs, runner) == ["HEADLESS-6"]
+    assert calls == [("eval", 'hl.monitor({ output = "eDP-1", mode = "1920x1080@60.049", position = "1050x0", scale = 1.5, transform = 0 })'),
+                     ("eval", 'hl.monitor({ output = "HEADLESS-6", mode = "1680x1050@60", position = "2330x0", scale = 1, transform = 1 })')]
+    calls.clear(); outputs[1]["x"] = 2330  # already in place: nothing is pinned or moved
+    assert place_outputs(placements, lambda: outputs, runner) == [] and calls == []
 
 def test_save_adapter_settings_keeps_and_clears_position():
     from jua254_monitor import save_adapter_settings, load_adapter_settings, adapter_position
