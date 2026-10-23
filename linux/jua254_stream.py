@@ -11,7 +11,9 @@ from jua254_diagnostics import DiagnosticsState
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "shared/handoff/linux-rgb-bars-20260825"
 
 CAPACITY = 470960
-METRIC_SAMPLE_LIMIT = 16384
+# Recent samples kept for percentiles (~35 s at 60 fps); count, mean and max stay exact over the
+# whole run. 16384 cost ~12 MB per busy stream, mostly in the per-update presentation events.
+METRIC_SAMPLE_LIMIT = 2048
 TELEMETRY_SCHEMA_VERSION = 2
 TELEMETRY_HISTORY_LIMIT = 120
 TELEMETRY_INTERVAL_SECONDS = .25
@@ -64,10 +66,13 @@ class LiveTelemetry:
             "recent_usb_completion_intervals_ms":[e["completion_interval_ms"] for e in events],
             "history_limit":self.history_limit,
         }
+    def due(self, now):
+        """Whether maybe_write at `now` would write a snapshot."""
+        return self.path is not None and (self.last_write is None or now-self.last_write>=self.interval)
     def maybe_write(self, metrics, presentation, now=None, force=False):
         if self.path is None: return False
         now=time.monotonic() if now is None else float(now)
-        if not force and self.last_write is not None and now-self.last_write<self.interval: return False
+        if not force and not self.due(now): return False
         payload=self.snapshot(metrics,presentation,now)
         temporary=self.path.with_name(f".{self.path.name}.{self.pid}.tmp")
         try:

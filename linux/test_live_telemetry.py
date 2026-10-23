@@ -38,6 +38,7 @@ def main():
         assert first["last_success"]["payload_sha256"]==digest
         assert len(first["recent_usb_start_intervals_ms"])==120
         assert len(first["recent_usb_completion_intervals_ms"])==120
+        assert not writer.due(20.1) and writer.due(20.25)
         assert not writer.maybe_write(metrics,trace,now=20.1)
         assert json.loads(path.read_text())["snapshot_monotonic"]==20
         assert writer.maybe_write(metrics,trace,now=20.25)
