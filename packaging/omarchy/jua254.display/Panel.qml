@@ -9,7 +9,7 @@ import qs.Ui
 
 // Omarchy bar counterpart of the macOS JUA254 Display menu-bar app: status per display,
 // Start/Stop, per-display resolution, portrait rotation and position, Identify (a red outline on that
-// screen), start at login, and the log.
+// screen), a drag-to-arrange map of the screens, start at login, and the log.
 // All state comes from `jua254-monitor-adapter --json`; changes go through the same tool,
 // which the running jua254-monitor service picks up within a second.
 Panel {
@@ -24,7 +24,10 @@ Panel {
   property var info: ({ service: "unknown", enabled: false, modes: [], adapters: [] })
   property string lastError: ""
   property bool busy: actionProcess.running
-  property var identified: null  // the adapter whose screen is outlined by Identify
+  property var identified: null  // { output, title } of the screen outlined by Identify
+  property bool arranging: false  // a screen is being dragged on the map; refreshing would drop it
+
+  readonly property var layout: info.layout || []
 
   readonly property var adapters: info.adapters || []
   readonly property bool running: info.service === "active" || info.service === "activating"
@@ -81,12 +84,13 @@ Panel {
         options.push({ value: side + ":" + screen.id, label: (sides[side] || side) + " " + screen.label })
       })
     })
-    if (!options.some(function(o) { return o.value === a.position })) options.push({ value: a.position, label: a.position })
+    if (!options.some(function(o) { return o.value === a.position }))
+      options.push({ value: a.position, label: /^-?\d+x-?\d+$/.test(a.position) ? "As arranged" : a.position })
     return options
   }
 
   function refresh() {
-    if (statusProcess.running) return
+    if (statusProcess.running || arranging) return
     statusProcess.command = ["bash", "-c", adapterCommand + " --json"]
     statusProcess.running = true
   }
@@ -106,10 +110,66 @@ Panel {
   function setMode(a, mode) { if (mode !== a.mode) act(adapterCommand + " " + shellQuote(a.location) + " --mode " + shellQuote(mode)) }
   function setPosition(a, position) { if (position !== a.position) act(adapterCommand + " " + shellQuote(a.location) + " --position " + shellQuote(position)) }
   function setRotation(a, rotate) { if (rotate !== a.rotate) act(adapterCommand + " " + shellQuote(a.location) + " --rotate " + shellQuote(rotate)) }
-  function identify(a) {
-    if (!a.output) return
-    identified = a
+  function identify(output, title) {
+    if (!output) return
+    identified = { output: output, title: title }
     identifyTimer.restart()
+  }
+
+  // Arrange map. Every box is in layout pixels. `snapPosition` puts a dragged box against the nearest
+  // edge of another screen, sharing at least a quarter of that edge so the pointer can cross, lined up
+  // with the other screen's edge when it is close; null when no spot nearby is free.
+  function layoutBounds() {
+    if (layout.length === 0) return { x: 0, y: 0, w: 1, h: 1 }
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    layout.forEach(function(s) {
+      x0 = Math.min(x0, s.x); y0 = Math.min(y0, s.y)
+      x1 = Math.max(x1, s.x + s.w); y1 = Math.max(y1, s.y + s.h)
+    })
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+  }
+
+  function snapPosition(name, x, y, w, h) {
+    var others = layout.filter(function(s) { return s.name !== name })
+    var snap = Math.max(w, h) * 0.1
+    function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi) }
+    function near(v, edges) {
+      for (var i = 0; i < edges.length; i++) if (Math.abs(v - edges[i]) <= snap) return edges[i]
+      return v
+    }
+    function free(cx, cy) {
+      return !others.some(function(o) { return cx < o.x + o.w && cx + w > o.x && cy < o.y + o.h && cy + h > o.y })
+    }
+    var best = null, bestDistance = Infinity
+    others.forEach(function(o) {
+      var shareY = Math.min(h, o.h) / 4, shareX = Math.min(w, o.w) / 4
+      var alongY = Math.round(near(clamp(y, o.y - h + shareY, o.y + o.h - shareY), [o.y, o.y + o.h - h]))
+      var alongX = Math.round(near(clamp(x, o.x - w + shareX, o.x + o.w - shareX), [o.x, o.x + o.w - w]))
+      var spots = [[o.x - w, alongY], [o.x + o.w, alongY], [alongX, o.y - h], [alongX, o.y + o.h]]
+      spots.forEach(function(c) {
+        var d = Math.hypot(c[0] - x, c[1] - y)
+        if (d < bestDistance && free(c[0], c[1])) { best = c; bestDistance = d }
+      })
+    })
+    return best
+  }
+
+  // Save every screen at its place on the map, the dropped one at `spot`, in one go, so none is left to
+  // Hyprland's automatic layout to shuffle. The whole layout is shifted so its top-left corner is 0x0.
+  function arrange(screen, spot) {
+    var places = layout.map(function(s) { return s.name === screen.name ? spot : [s.x, s.y] })
+    var minX = Math.min.apply(null, places.map(function(p) { return p[0] }))
+    var minY = Math.min.apply(null, places.map(function(p) { return p[1] }))
+    var items = layout.map(function(s, i) {
+      return shellQuote((s.adapter || s.name) + "=" + (places[i][0] - minX) + "x" + (places[i][1] - minY))
+    })
+    if (items.length > 0) act(adapterCommand + " --arrange " + items.join(" ") + " >/dev/null")
+  }
+
+  function screenTitle(screen) {
+    if (!screen.adapter) return screen.label === "Laptop" ? "Laptop screen" : screen.label
+    var a = adapters.filter(function(a) { return a.location === screen.adapter })[0]
+    return a ? "Display " + a.number : screen.label
   }
 
   function showLog() {
@@ -163,7 +223,7 @@ Panel {
 
         Text {
           anchors.centerIn: parent
-          text: root.identified ? "Display " + root.identified.number : ""
+          text: root.identified ? root.identified.title : ""
           color: "#ff2020"
           style: Text.Outline
           styleColor: "black"
@@ -229,7 +289,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentWidth: panel.fittedContentWidth(Style.space(420))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(620))
 
     PanelKeyCatcher {
@@ -293,6 +353,117 @@ Panel {
             }
           }
 
+          Column {
+            width: column.width
+            spacing: Style.space(8)
+            visible: root.layout.length > 1
+
+            PanelSeparator { foreground: root.foreground }
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "ARRANGE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Drag the screens to match your desk. Click one to see which it is."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Item {
+              id: arrangeMap
+              width: parent.width
+              height: Style.space(180)
+              clip: true
+
+              readonly property var bounds: root.layoutBounds()
+              // Room around the screens to drop one above, below or beside them all.
+              readonly property real pad: Math.max.apply(null, root.layout.map(function(s) { return Math.max(s.w, s.h) }).concat([1])) * 0.6
+              readonly property real scale: Math.min(width / (bounds.w + 2 * pad), height / (bounds.h + 2 * pad))
+              readonly property real originX: (width - bounds.w * scale) / 2 - bounds.x * scale
+              readonly property real originY: (height - bounds.h * scale) / 2 - bounds.y * scale
+
+              Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.color: root.dim
+                border.width: 1
+                radius: 4
+              }
+
+              Repeater {
+                model: root.layout
+
+                Rectangle {
+                  id: box
+                  required property var modelData
+                  readonly property bool adapterScreen: !!modelData.adapter
+                  readonly property real homeX: arrangeMap.originX + modelData.x * arrangeMap.scale
+                  readonly property real homeY: arrangeMap.originY + modelData.y * arrangeMap.scale
+
+                  x: homeX
+                  y: homeY
+                  z: dragArea.pressed ? 2 : 1
+                  width: modelData.w * arrangeMap.scale
+                  height: modelData.h * arrangeMap.scale
+                  radius: 3
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, adapterScreen ? 0.22 : 0.12)
+                  border.color: dragArea.pressed ? root.urgent : root.foreground
+                  border.width: dragArea.pressed ? 2 : 1
+
+                  Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 4
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                    text: box.modelData.label
+                    elide: Text.ElideRight
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Math.max(8, Math.min(box.height * 0.45, box.adapterScreen ? Style.font.body : Style.font.bodySmall))
+                    font.bold: box.adapterScreen
+                  }
+
+                  MouseArea {
+                    id: dragArea
+                    anchors.fill: parent
+                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    drag.target: box
+                    drag.threshold: 2
+
+                    onPressed: {
+                      root.arranging = true
+                      root.identify(box.modelData.name, root.screenTitle(box.modelData))
+                    }
+                    onCanceled: { root.arranging = false; box.x = Qt.binding(function() { return box.homeX }); box.y = Qt.binding(function() { return box.homeY }) }
+                    onReleased: {
+                      root.arranging = false
+                      if (Math.abs(box.x - box.homeX) < 1 && Math.abs(box.y - box.homeY) < 1) return
+                      var s = box.modelData
+                      var spot = root.snapPosition(s.name, Math.round((box.x - arrangeMap.originX) / arrangeMap.scale),
+                                                   Math.round((box.y - arrangeMap.originY) / arrangeMap.scale), s.w, s.h)
+                      if (spot && (spot[0] !== s.x || spot[1] !== s.y)) {
+                        box.x = arrangeMap.originX + spot[0] * arrangeMap.scale
+                        box.y = arrangeMap.originY + spot[1] * arrangeMap.scale
+                        root.arrange(s, spot)
+                      } else {
+                        box.x = Qt.binding(function() { return box.homeX })
+                        box.y = Qt.binding(function() { return box.homeY })
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           Repeater {
             model: root.adapters
 
@@ -322,7 +493,7 @@ Panel {
                   enabled: !!adapterColumn.modelData.output
                   foreground: root.foreground
                   fontFamily: root.fontFamily
-                  onClicked: root.identify(adapterColumn.modelData)
+                  onClicked: root.identify(adapterColumn.modelData.output, "Display " + adapterColumn.modelData.number)
                 }
               }
 
