@@ -340,7 +340,7 @@ def stream_command(name, args, mode=None, rotate="none"):
     else:
         capture = ["--capture", "wlroots-native", "--encoder", "hardware", "--capture-direct-read", "--capture-zero-copy"]
     cmd = [sys.executable, args.streamer, *capture, "--monitor", name,
-           "--fps", str(fps), "--template", str(args.template), *diagnostic, *state, *phase, *rotation, *sized, *ring, *seconds, "--stats"]
+           "--fps", str(fps), "--template", str(args.template), *diagnostic, *state, *phase, *rotation, *sized, *ring, *seconds]
     return cmd
 
 def stream_output(name, args):
