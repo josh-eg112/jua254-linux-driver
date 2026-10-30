@@ -36,6 +36,16 @@ sudo pacman -S --needed python python-pyusb libusb wayland wayland-protocols lib
 
 ### Arch Linux package (recommended)
 
+Install the prebuilt package from the [latest release](https://github.com/josh-eg112/jua254-linux-driver/releases);
+pacman pulls in the dependencies:
+
+```bash
+sudo pacman -U https://github.com/josh-eg112/jua254-linux-driver/releases/download/v0.5.0-alpha/jua254-linux-driver-0.5.0alpha-1-x86_64.pkg.tar.zst
+```
+
+pacman won't update it for you: to update, run the same command with the package URL from a newer
+release. Or build the package yourself:
+
 ```bash
 git clone https://github.com/josh-eg112/jua254-linux-driver.git
 cd jua254-linux-driver/packaging/aur
