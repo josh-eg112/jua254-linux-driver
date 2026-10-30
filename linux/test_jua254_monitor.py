@@ -471,3 +471,79 @@ def test_save_adapter_settings_keeps_and_clears_position():
     assert load_adapter_settings(path)["2-1"] == {"position": "right:eDP-1", "rotate": "left"}
     save_adapter_settings("2-1", position="auto", path=path)
     assert load_adapter_settings(path)["2-1"] == {"rotate": "left"} and adapter_position("2-1", path) is None
+
+def test_place_outputs_pins_computer_screens_when_moving_to_a_fixed_place():
+    from jua254_monitor import place_outputs
+    calls = []
+    outputs = [{"name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1.5, "refreshRate": 60.0},
+               {"name": "DP-5", "x": 1280, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refreshRate": 60.0},
+               {"name": "HEADLESS-7", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1, "disabled": True},
+               {"name": "HEADLESS-6", "x": 3200, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+    runner = lambda *a: calls.append(a) or "ok"
+    assert place_outputs({"HEADLESS-6": (("at", 1280, -1080), "1920x1080@60", 0)}, lambda: outputs, runner) == ["HEADLESS-6"]
+    assert [c[1].split('"')[1] for c in calls] == ["DP-5", "eDP-1", "HEADLESS-6"]
+
+def test_screen_layout_lists_boxes_in_layout_pixels():
+    from jua254_monitor import screen_layout
+    outputs = {"eDP-1": {"name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1.5},
+               "DP-5": {"name": "DP-5", "x": 1280, "y": 0, "width": 1920, "height": 1080, "scale": 1, "disabled": True},
+               "HEADLESS-3": {"name": "HEADLESS-3", "x": 3200, "y": 0, "width": 1680, "height": 1050, "scale": 1, "transform": 1},
+               "HEADLESS-9": {"name": "HEADLESS-9", "x": 9000, "y": 0, "width": 800, "height": 600, "scale": 1}}
+    adapters = [{"number": 3, "location": "2-2.3.3", "output": "HEADLESS-3"}]
+    assert screen_layout(outputs, adapters) == [
+        {"name": "eDP-1", "label": "Laptop", "x": 0, "y": 0, "w": 1280, "h": 720, "adapter": None},
+        {"name": "HEADLESS-3", "label": "3", "x": 3200, "y": 0, "w": 1050, "h": 1680, "adapter": "2-2.3.3"}]
+
+def test_place_outputs_moves_computer_screens_to_saved_places_first():
+    from jua254_monitor import place_outputs
+    calls = []
+    outputs = [{"name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1.5, "refreshRate": 60.0},
+               {"name": "DP-5", "x": 1280, "y": 0, "width": 1920, "height": 1080, "scale": 1, "refreshRate": 60.0},
+               {"name": "HEADLESS-6", "x": 5000, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+    runner = lambda *a: calls.append(a) or "ok"
+    screens = lambda outs: {"eDP-1": (1920, 0), "DP-5": (0, 0)}
+    placements = {"HEADLESS-6": (("next", "right", "eDP-1"), "1920x1080@60", 0)}
+    assert place_outputs(placements, lambda: outputs, runner, screens) == ["eDP-1", "DP-5", "HEADLESS-6"]
+    # The laptop and DP-5 swap places, so the laptop steps aside first and nothing ever overlaps.
+    assert calls == [("eval", 'hl.monitor({ output = "HEADLESS-6", mode = "1920x1080@60", position = "3200x0", scale = 1, transform = 0 })'),
+                     ("eval", 'hl.monitor({ output = "eDP-1", mode = "1920x1080@60.000", position = "5120x0", scale = 1.5, transform = 0 })'),
+                     ("eval", 'hl.monitor({ output = "DP-5", mode = "1920x1080@60.000", position = "0x0", scale = 1, transform = 0 })'),
+                     ("eval", 'hl.monitor({ output = "eDP-1", mode = "1920x1080@60.000", position = "1920x0", scale = 1.5, transform = 0 })')]
+    calls.clear()
+    outputs[0]["x"], outputs[1]["x"], outputs[2]["x"] = 1920, 0, 3200  # all in place: nothing is pinned or moved
+    assert place_outputs(placements, lambda: outputs, runner, screens) == [] and calls == []
+
+def test_screen_positions_are_saved_by_description():
+    from jua254_monitor import save_screen_position, screen_placements
+    path = Path(tempfile.mkdtemp()) / "screens.json"
+    save_screen_position("ASUS VG248 123", "1280x0", path)
+    outputs = [{"name": "DP-6", "description": "ASUS VG248 123", "x": 0, "y": 0},
+               {"name": "eDP-1", "description": "AUO", "x": 0, "y": 0},
+               {"name": "HEADLESS-1", "description": "ASUS VG248 123", "x": 0, "y": 0}]
+    assert screen_placements(outputs, path) == {"DP-6": (1280, 0)}
+    save_screen_position("ASUS VG248 123", "auto", path)
+    assert screen_placements(outputs, path) == {}
+
+def test_move_order_never_overlaps_and_always_finishes():
+    from jua254_monitor import move_order, boxes_overlap
+    boxes = {"A": [0, 0, 100, 100], "B": [100, 0, 100, 100], "C": [200, 0, 100, 100]}
+    moves = {"A": (200, 0), "B": (0, 0), "C": (100, 0)}  # a three-way rotation
+    steps = move_order(moves, boxes); state = {n: list(b) for n, b in boxes.items()}
+    for name, (x, y) in steps:
+        state[name][:2] = [x, y]
+        assert not any(boxes_overlap(state[name], b) for o, b in state.items() if o != name), steps
+    assert {n: tuple(b[:2]) for n, b in state.items()} == {"A": (200, 0), "B": (0, 0), "C": (100, 0)}
+    # A spot taken by a screen that isn't moving can't be freed: the move just happens, in one step.
+    assert move_order({"A": (100, 0)}, {"A": [0, 0, 100, 100], "B": [100, 0, 100, 100]}) == [("A", (100, 0))]
+
+def test_arrange_saves_adapters_and_screens_together_or_not_at_all():
+    from jua254_monitor import arrange_command, load_adapter_settings, load_screen_positions
+    d = Path(tempfile.mkdtemp()); adapters, screens = d / "adapters.json", d / "screens.json"
+    outputs = lambda: [{"name": "DP-5", "description": "ASUS VG248 123"}, {"name": "HEADLESS-1", "description": ""}]
+    attached = lambda: ["2-1"]
+    assert arrange_command(["2-1=1920x0", "DP-5=0x0"], adapters, screens, outputs, attached) == 0
+    assert load_adapter_settings(adapters) == {"2-1": {"position": "1920x0"}}
+    assert load_screen_positions(screens) == {"ASUS VG248 123": "0x0"}
+    for bad in (["2-1=0x0", "DP-9=0x0"], ["2-1=right:DP-5"], ["HEADLESS-1=0x0"], ["2-1"]):
+        assert arrange_command(bad, adapters, screens, outputs, attached) == 2
+    assert load_adapter_settings(adapters) == {"2-1": {"position": "1920x0"}}

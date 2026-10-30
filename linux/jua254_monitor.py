@@ -10,6 +10,10 @@ OWNERSHIP_FILE = STATE_DIR / "headless-outputs.json"
 # Per-adapter settings, keyed by USB location ("bus-port"):
 # {"3-1": {"mode": "1680x1050@60", "rotate": "left", "position": "right:eDP-1"}}.
 ADAPTER_SETTINGS = Path(os.environ.get("JUA254_ADAPTER_SETTINGS", Path.home() / ".config/jua254/adapters.json"))
+# Where the computer's own screens go while adapters are in use (set by dragging them in the bar menu),
+# keyed by the monitor's make, model and serial so a screen keeps its place on another port:
+# {"ASUSTek COMPUTER INC VG248 N3LMQS091593": "1280x0"}.
+SCREEN_SETTINGS = Path(os.environ.get("JUA254_SCREEN_SETTINGS", Path.home() / ".config/jua254/screens.json"))
 # Hyprland output transforms for a monitor turned on its side; if the picture is upside down, use the other.
 ROTATIONS = {"none": 0, "right": 1, "left": 3}
 # Where an adapter's screen goes: "<side>:<target>" puts it against another screen, the target being an
@@ -193,6 +197,33 @@ def save_adapter_settings(location, mode=None, rotate=None, reset=False, path=No
     tmp = path.with_suffix(".tmp"); tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n"); tmp.replace(path)
     return entry
 
+def screen_key(output):
+    """What a computer screen's saved place is filed under: its description (make, model, serial)."""
+    return output.get("description") or output.get("name")
+
+def load_screen_positions(path=None):
+    try: data = json.loads(Path(path or SCREEN_SETTINGS).read_text())
+    except (OSError, ValueError): return {}
+    return data if isinstance(data, dict) else {}
+
+def save_screen_position(key, position, path=None):
+    path = Path(path or SCREEN_SETTINGS); data = load_screen_positions(path)
+    if position in (None, "", "auto"): data.pop(key, None)
+    else: data[key] = position
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp"); tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n"); tmp.replace(path)
+
+def screen_placements(outputs, path=None):
+    """{name: (x, y)} for each connected computer screen with a saved fixed place."""
+    saved = load_screen_positions(path); result = {}
+    for m in outputs:
+        name = m.get("name")
+        if not name or _is_virtual(name) or m.get("disabled"): continue
+        try: position = parse_position(saved.get(screen_key(m)))
+        except ValueError: continue
+        if position and position[0] == "at": result[name] = position[1:]
+    return result
+
 def apply_output_mode(name, mode, list_monitors=None, runner=None, transform=0):
     """Size and turn the managed output to the adapter mode at scale 1, keeping its place; no-op when it
     already matches. Scale is forced to 1 because a catch-all monitor rule (Omarchy's `scale = "auto"`)
@@ -239,31 +270,68 @@ def placed_positions(placements, outputs):
     return result
 
 def pin_output(output, runner):
-    """Fix a compositor output at its current mode, place, scale and turn, so auto layout leaves it be."""
+    """Fix a compositor output at its mode, place, scale and turn, so auto layout leaves it be."""
     if output is None or not isinstance(output.get("x"), int) or not isinstance(output.get("y"), int): return
     mode = f'{output["width"]}x{output["height"]}@{output.get("refreshRate", 60):.3f}'
     runner("eval", f'hl.monitor({{ output = "{output["name"]}", mode = "{mode}", position = "{output["x"]}x{output["y"]}", '
                    f'scale = {output.get("scale") or 1:g}, transform = {output.get("transform", 0)} }})')
 
-def place_outputs(placements, list_monitors=None, runner=None):
+def boxes_overlap(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+def move_order(moves, boxes):
+    """Order `moves` ({name: (x, y)}) so no step lays one screen over another: Hyprland warns about every
+    overlapping layout it passes through. `boxes` is {name: [x, y, w, h]} as things stand. A screen whose
+    spot another moving screen still holds (two swapping places) first steps aside past the right edge of
+    everything; one whose spot can't be freed is moved anyway. Returns [(name, (x, y))], aside steps included."""
+    boxes = {n: list(b) for n, b in boxes.items()}; pending = dict(moves); aside = set(); steps = []
+    def blockers(name):
+        x, y = pending[name]; w, h = boxes[name][2:] if name in boxes else (0, 0)
+        return {other for other, b in boxes.items() if other != name and boxes_overlap((x, y, w, h), b)}
+    while pending:
+        name = (next((n for n in pending if not blockers(n)), None)  # its spot is free
+                or next((n for n in pending if not blockers(n) & set(pending)), None))  # held by a screen that stays
+        if name is None:
+            name = next((n for n in pending if n not in aside and n in boxes), None)
+            if name is not None:
+                spot = (max(b[0] + b[2] for b in boxes.values()), boxes[name][1])
+                steps.append((name, spot)); boxes[name][:2] = spot; aside.add(name)
+                continue
+            name = next(iter(pending))
+        spot = pending.pop(name); steps.append((name, spot))
+        if name in boxes: boxes[name][:2] = spot
+    return steps
+
+def place_outputs(placements, list_monitors=None, runner=None, screens=None):
     """Move each output in `placements` ({name: (parsed position, mode, transform)}) to its place when it
-    is elsewhere; returns the names moved. Only the position changes, so streaming carries on."""
+    is elsewhere, and each computer screen to its place from `screens(outputs)` ({name: (x, y)}), in an
+    order that never overlaps two screens; returns the names moved. Only the position changes, so
+    streaming carries on."""
     list_monitors = list_monitors or monitors; runner = runner or hypr
-    outputs = list_monitors(); current = {m.get("name"): (m.get("x"), m.get("y")) for m in outputs}
-    moved = []
+    original = list_monitors(); current = {m.get("name"): (m.get("x"), m.get("y")) for m in original}
+    fixed_places = screens(original) if screens else {}
+    outputs = [dict(m, x=fixed_places[m["name"]][0], y=fixed_places[m["name"]][1]) if m.get("name") in fixed_places else m
+               for m in original]
     targets = placed_positions({n: p for n, (p, _, _) in placements.items()}, outputs)
-    if any(current.get(name) != pos for name, pos in targets.items()):
-        # A screen placed against one Hyprland lays out "auto" would chase it forever: each move re-runs
-        # the auto layout, which shifts the target past the moved screen. Pin such targets where they are.
-        for target in {p[2] for p, _, _ in placements.values() if p[0] == "next"} - set(placements):
-            pin_output(next((m for m in outputs if m.get("name") == target), None), runner)
-    for name, (x, y) in targets.items():
-        if current.get(name) == (x, y): continue
-        _, mode, transform = placements[name]
-        runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{x}x{y}", scale = 1, '
-                       f'transform = {transform} }})')
-        moved.append(name)
-    return moved
+    moves = {n: tuple(p) for n, p in fixed_places.items() if n in current and current[n] != tuple(p)}
+    moves.update({n: p for n, p in targets.items() if current.get(n) != p})
+    if not moves: return []
+    by_name = {m.get("name"): m for m in outputs}
+    # A screen placed against one Hyprland lays out "auto" would chase it forever: each move re-runs
+    # the auto layout, which shifts the target past the moved screen. Pin such targets where they are,
+    # and the computer's own screens too, so a screen dragged to a fixed place doesn't push them along.
+    fixed = {m.get("name") for m in outputs if m.get("name") and not _is_virtual(m["name"]) and not m.get("disabled")}
+    for target in sorted(({p[2] for p, _, _ in placements.values() if p[0] == "next"} | fixed) - set(placements) - set(moves)):
+        pin_output(by_name.get(target), runner)
+    boxes = {m["name"]: [m["x"], m["y"], *layout_size(m)] for m in original
+             if m.get("name") and not m.get("disabled") and isinstance(m.get("x"), int) and isinstance(m.get("y"), int)}
+    for name, (x, y) in move_order(moves, boxes):
+        if name in placements:
+            _, mode, transform = placements[name]
+            runner("eval", f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "{x}x{y}", scale = 1, '
+                           f'transform = {transform} }})')
+        else: pin_output(dict(by_name[name], x=x, y=y), runner)  # a computer screen moves by pinning it there
+    return list(moves)
 
 def wait_output_ready(name, timeout=3, list_monitors=monitors):
     """Wait until the exact output is enabled and has captureable dimensions."""
@@ -340,7 +408,7 @@ def stream_command(name, args, mode=None, rotate="none"):
     else:
         capture = ["--capture", "wlroots-native", "--encoder", "hardware", "--capture-direct-read", "--capture-zero-copy"]
     cmd = [sys.executable, args.streamer, *capture, "--monitor", name,
-           "--fps", str(fps), "--template", str(args.template), *diagnostic, *state, *phase, *rotation, *sized, *ring, *seconds, "--stats"]
+           "--fps", str(fps), "--template", str(args.template), *diagnostic, *state, *phase, *rotation, *sized, *ring, *seconds]
     return cmd
 
 def stream_output(name, args):
@@ -458,9 +526,9 @@ def place_sessions(sessions):
             position = ("next", position[1], sessions[position[2]].name)
         mode, rotate = session.settings
         placements[session.name] = (position, mode, ROTATIONS[rotate])
-    if not placements: return
+    if not placements and not load_screen_positions(): return
     try:
-        for name in place_outputs(placements): print(f"JUA254 placed output={name}", flush=True)
+        for name in place_outputs(placements, screens=screen_placements): print(f"JUA254 placed output={name}", flush=True)
     except RuntimeError as exc:
         print(f"JUA254 placement deferred: {exc}", flush=True)
 
@@ -630,13 +698,62 @@ def menu_status():
     screens += [{"id": a["location"], "label": f"Display {a['number']}"} for a in adapters]
     return {"service": systemctl("is-active"), "enabled": systemctl("is-enabled") == "enabled",
             "modes": list(MENU_MODES), "rotations": sorted(ROTATIONS), "sides": list(PLACE_SIDES),
-            "screens": screens, "adapters": adapters}
+            "screens": screens, "adapters": adapters, "layout": screen_layout(outputs, adapters)}
+
+def screen_layout(outputs, adapters):
+    """Every shown screen's box in layout pixels, for the menu's drag-to-arrange map. "adapter" is the
+    USB location of the adapter driving it, or None for one of the computer's own screens."""
+    by_output = {a["output"]: a for a in adapters if a.get("output")}
+    layout = []
+    for name, m in outputs.items():
+        if not name or m.get("disabled") or not isinstance(m.get("x"), int) or not isinstance(m.get("y"), int): continue
+        adapter = by_output.get(name)
+        if adapter is None and _is_virtual(name): continue
+        w, h = layout_size(m)
+        label = f"{adapter['number']}" if adapter else ("Laptop" if name.startswith("eDP") else (m.get("model") or name))
+        layout.append({"name": name, "label": label, "x": m["x"], "y": m["y"], "w": w, "h": h,
+                       "adapter": adapter["location"] if adapter else None})
+    return layout
 
 def describe_settings(mode, rotate, position):
     return mode + (f", rotated {rotate}" if rotate != "none" else "") + (f", placed {position}" if position else "")
 
+def screen_command(args):
+    """Save where one of the computer's own screens goes, by its output name (eDP-1, DP-5)."""
+    try: position = parse_position(args.position)
+    except ValueError as exc: print(f"--position: {exc}", file=sys.stderr); return 2
+    if position is not None and position[0] != "at":
+        print("--position: a computer screen takes XxY (e.g. 0x0) or auto", file=sys.stderr); return 2
+    output = next((m for m in monitors() if m.get("name") == args.screen and not _is_virtual(args.screen)), None)
+    if output is None: print(f"--screen: no screen called {args.screen} is connected", file=sys.stderr); return 2
+    save_screen_position(screen_key(output), None if position is None else args.position)
+    print(f"{args.screen}: placed {args.position} while adapters are in use")
+    return 0
+
+def arrange_command(places, path=None, screen_path=None, list_monitors=monitors, attached=attached_locations):
+    """Save a whole layout at once from "<adapter USB location or computer screen output>=XxY" items,
+    so the service never applies half of it."""
+    outputs = {m.get("name"): m for m in list_monitors() if m.get("name") and not _is_virtual(m["name"])}
+    adapters = set(attached()); parsed = []
+    for item in places:
+        key, _, spec = item.partition("=")
+        try: position = parse_position(spec)
+        except ValueError as exc: print(f"--arrange {item}: {exc}", file=sys.stderr); return 2
+        if position is None or position[0] != "at": print(f"--arrange {item}: expected <screen>=XxY", file=sys.stderr); return 2
+        if key not in adapters and key not in outputs: print(f"--arrange {item}: no adapter or screen called {key}", file=sys.stderr); return 2
+        parsed.append((key, spec))
+    for key, spec in parsed:
+        if key in adapters: save_adapter_settings(key, position=spec, path=path)
+        else: save_screen_position(screen_key(outputs[key]), spec, screen_path)
+    print("Arranged " + ", ".join(f"{k} at {v}" for k, v in parsed))
+    return 0
+
 def adapter_command(args):
     if args.json: print(json.dumps(menu_status())); return 0
+    if args.arrange: return arrange_command(args.arrange)
+    if args.screen is not None:
+        if args.position is None: print("--screen needs --position", file=sys.stderr); return 2
+        return screen_command(args)
     attached = attached_locations()
     if args.location is None:
         if not attached: print("No JUA254 adapter is plugged in."); return 0
@@ -673,6 +790,10 @@ def main():
     adapter.add_argument("--rotate", choices=sorted(ROTATIONS), help="for a monitor turned on its side")
     adapter.add_argument("--position", help="where the screen goes: right:eDP-1 (left/right/above/below another screen, "
                                            "named by output or adapter USB location), 1920x0 in layout pixels, or auto")
+    adapter.add_argument("--screen", help="one of the computer's own screens by output name (e.g. DP-5), to place with "
+                                         "--position XxY while adapters are in use")
+    adapter.add_argument("--arrange", nargs="+", metavar="SCREEN=XxY",
+                         help="save a whole layout at once; each SCREEN is an adapter USB location or a computer screen (eDP-1)")
     adapter.add_argument("--reset", action="store_true", help="back to 1920x1080@60, not rotated, placed automatically")
     adapter.add_argument("--json", action="store_true", help="print the service and every adapter's state as JSON (for the bar menu)")
     for command in ("test", "external-test", "run"):
