@@ -186,6 +186,7 @@ def test_oversized_frame_is_skipped_without_reconnecting():
         def begin_connection(self): pass
         def record(self, *a, **k): pass
     class Telemetry:
+        def due(self, now): return True
         def maybe_write(self, *a): pass
     class Diagnostics:
         def event(self, *a, **k): pass

@@ -295,7 +295,9 @@ def run_gpu(args, template, framer, metrics, presentation, telemetry, diagnostic
                 metrics["usb"].append((final - first) * 1000)
                 metrics["end_to_end"].append((done - newest.requested) * 1000)
                 metrics["frame_age_after_usb"].append((done - newest.ready) * 1000)
-                record_successful_usb_update(metrics, newest.seq, done, payload_sha256(base.items[0][8] if base else tiles[-1][8]))
+                # Only telemetry reads the hash, so skip hashing (the costliest per-frame step) between its writes.
+                payload_hash = payload_sha256(base.items[0][8] if base else tiles[-1][8]) if telemetry.due(done) else None
+                record_successful_usb_update(metrics, newest.seq, done, payload_hash)
                 if previous_sent is not None: metrics["frame_interval"].append((done - previous_sent) * 1000)
                 previous_sent = done
                 if metrics["sent"] == 1: diagnostics.event("first_usb", frame_id=newest.seq, update_id=1, adapter_generation=metrics["connections"])
