@@ -1,7 +1,7 @@
 # Maintainer: josh-eg112 <180571163+josh-eg112@users.noreply.github.com>
 pkgname=jua254-linux-driver
-pkgver=0.4.0alpha
-_tag=v0.4.0-alpha
+pkgver=0.5.0alpha
+_tag=v0.5.0-alpha
 pkgrel=1
 pkgdesc="Unofficial userspace driver for the j5create JUA254 USB-to-HDMI adapter (Hyprland extended monitor)"
 arch=('x86_64')
@@ -15,7 +15,7 @@ optdepends=('intel-media-driver: VA-API JPEG encoding for the 60 FPS GPU path'
 options=('!debug')
 install=jua254-linux-driver.install
 source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
-sha256sums=('6a002cd940978fa47cbd2d4f3667d7b0a679420d4bdb4de89594d53e1b57540a')
+sha256sums=('092d276d06fecb15a39253e911cd46e7d724f35f3c800b851199da90e5ddb080')
 
 build() {
   make -C "$pkgname-${_tag#v}/linux/native"
